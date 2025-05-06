@@ -1,0 +1,35 @@
+dir: 
+name: case_5_ppo_middle
+load_agent: 
+seed: 0
+case: 5
+reward: margin
+gpuid: 0
+memlen: 50000
+nb_steps: 100
+eval_steps: 50
+mask: 3
+max_reward: 10
+input: ['p_i', 'r', 'o', 'd', 'm']
+forecast: 0
+danger: 0.9
+middle_agent: ppo
+agent: sacd_emb
+network: lin
+head_number: 8
+state_dim: 128
+n_history: 6
+dropout: 0.0
+n_layers: 3
+lr: 0.001
+gamma: 0.995
+batch_size: 8
+update_start: 2
+rule: c
+threshold: 0.1
+target_update: 1
+tau: 0.001
+target_entropy_scale: 0.98
+epsilon: 0.1
+entropy: 0.01
+lambda: 0.95
