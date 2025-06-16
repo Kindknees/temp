@@ -1,0 +1,85 @@
+env_config_train: &env_config_train
+  env_name: rte_case14_realistic_train
+  keep_actions: ['change_bus']
+  keep_observations : ['rho', 'gen_p', 'load_p', 'p_or', 'p_ex', 'timestep_overflow', 'maintenance' , 'topo_vect']
+  convert_to_tuple: True
+  act_on_single_substation: True
+  medha_actions: True
+  use_parametric: False 
+  rho_threshold: 0.95
+  scale: True
+  run_until_threshold: True
+  log_reward: False
+  disable_line: -1
+  substation_actions: False
+  greedy_agent : False
+  conn_matrix: False
+
+env_config_val: &env_config_val
+  env_name: rte_case14_realistic_val
+  keep_actions: ['change_bus']
+  keep_observations : ['rho', 'gen_p', 'load_p', 'p_or', 'p_ex', 'timestep_overflow', 'maintenance' , 'topo_vect']
+  convert_to_tuple: True
+  act_on_single_substation: True
+  medha_actions: True
+  use_parametric: False 
+  rho_threshold: 0.95
+  scale: True
+  run_until_threshold: True
+  log_reward: False
+  disable_line: -1
+  substation_actions: False
+  greedy_agent : False
+  conn_matrix: False
+
+choose_substation_agent_params: &choose_substation_agent_params
+  model:  
+    fcnet_hiddens: [256,256,256]
+    fcnet_activation: relu
+    custom_model : choose_substation_model
+    custom_model_config : 
+      share_actor: False
+
+
+choose_action_agent_params: &choose_action_agent_params
+  model:  
+    fcnet_hiddens: [256,256,256]
+    fcnet_activation: relu
+    custom_model : choose_action_model
+    custom_model_config : 
+      share_actor: False
+
+
+tune_config:
+  # 訓練超參數的靜態部分
+  framework: torch
+  kl_coeff: 0.3
+  lambda: 0.95
+  vf_loss_coeff: 0.9
+  vf_clip_param: 1500
+  num_sgd_iter: 8
+  entropy_coeff: 0.025
+  sgd_minibatch_size: 256
+  train_batch_size: 1024
+  rollout_fragment_length: 128
+  ignore_worker_failures: True
+  num_workers: 2
+  # 多智慧體策略的靜態部分
+  multiagent:
+    policies:
+      choose_substation_agent:
+        config:
+          model:  
+            fcnet_hiddens: 
+            fcnet_activation: relu
+            custom_model: choose_substation_model
+            custom_model_config: 
+              share_actor: False
+      choose_action_agent:
+        config:
+          model:  
+            fcnet_hiddens: 
+            fcnet_activation: relu
+            custom_model: choose_action_model
+            custom_model_config: 
+              share_actor: False
