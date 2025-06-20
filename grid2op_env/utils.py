@@ -42,6 +42,13 @@ class CustomDiscreteActions(Discrete):
         Discrete.__init__(self, n=converter.n)
     def from_gym(self, gym_action):
         return self.converter.convert_act(gym_action)
+    def close(self):
+        """
+        This method is required by the grid2op GymEnv's close method.
+        If the converter or other components have resources to release,
+        they should be closed here. Otherwise, we can just pass.
+        """
+        pass
 
 def get_sub_id_to_elem_id(env):
     """
