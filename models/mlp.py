@@ -1,5 +1,3 @@
-# mlp.py (已修正為 RLModule API)
-
 import gymnasium as gym
 import numpy as np
 import logging
@@ -8,12 +6,12 @@ import torch
 import torch.nn as nn
 
 from ray.rllib.core.rl_module.torch.torch_rl_module import TorchRLModule
+# [修正] 不再需要 RLModuleConfig
 # from ray.rllib.core.rl_module.rl_module import RLModuleConfig
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.typing import Dict, List, ModelConfigDict, TensorType
 
-# 適合用作 -inf logit 的極小值
 FLOAT_MIN = -3.4e38
 
 class BaseHierarchicalRLM(TorchRLModule, nn.Module):
