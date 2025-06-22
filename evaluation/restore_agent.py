@@ -4,7 +4,7 @@ import json
 import os
 import logging
 import numpy as np
-import gym
+import gymnasium as gym
 
 from train_hierarchical import policy_mapping_fn
 

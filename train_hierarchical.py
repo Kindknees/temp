@@ -10,7 +10,8 @@ import gymnasium as gym
 import ray
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
-from ray.rllib.policy.policy import PolicySpec
+# [註解] 不再需要 PolicySpec，因為我們直接配置 RLModule
+# from ray.rllib.policy.policy import PolicySpec
 # [新增] 導入 RLModule 相關的類別
 from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
@@ -18,11 +19,12 @@ from ray.tune.logger import pretty_print
 from ray.tune.stopper import CombinedStopper, MaximumIterationStopper
 from ray.tune.registry import register_env
 from ray.air.integrations.wandb import WandbLoggerCallback
-from ray.train import RunConfig, CheckpointConfig
+from ray.tune import RunConfig, CheckpointConfig
 
 from dotenv import load_dotenv
 
-# [修正] 導入的是我們修正後的 RLModule 模型
+# [修正] 導入的是我們自訂的 RLModule 模型 (假設它們已更新為 RLModule)
+# 確保 models.mlp 中的類別繼承自 ray.rllib.core.rl_module.torch.TorchRLModule
 from models.mlp import ChooseSubstationModel, ChooseActionModel
 from grid2op_env.grid_to_gym import HierarchicalGridGym
 from experiments.stopper import MaxNotImprovedStopper
@@ -44,14 +46,11 @@ def main():
     random.seed(2137)
     np.random.seed(2137)
     torch.manual_seed(2137)
-
-    # 註冊自訂模型和環境
-    # 雖然原始碼中有註冊其他模型，但根據 train_hierarchical.py 的邏輯，只用到以下兩個
-    ray.rllib.models.ModelCatalog.register_custom_model("choose_substation_model", ChooseSubstationModel)
-    ray.rllib.models.ModelCatalog.register_custom_model("choose_action_model", ChooseActionModel)
+    
+    # 註冊環境的呼叫保持不變
     register_env("HierarchicalGridGym", lambda config: HierarchicalGridGym(config))
 
-    # 解析命令列參數
+    # 解析命令列參數 (保持不變)
     parser = argparse.ArgumentParser(description="Train a hierarchical agent on the Grid2Op environment")
     parser.add_argument("--algorithm", type=str, default="ppo", help="Algorithm to use", choices=["ppo"])
     parser.add_argument("--algorithm_config_path", type=str, default="experiments/hierarchical/full_mlp_share_critic.yaml", help="Path to config file for the algorithm")
@@ -88,34 +87,28 @@ def main():
     env_config_train['with_opponent'] = args.with_opponent
     config.environment(env="HierarchicalGridGym", env_config=env_config_train)
 
-    # 臨時創建環境以獲取觀察和動作空間
-    # temp_env = HierarchicalGridGym(env_config_train)
-    
     # 3. 設置多智慧體策略
     config.multi_agent(
         policies=["choose_substation_agent", "choose_action_agent"],
-        policy_mapping_fn=(lambda agent_id, episode, worker, **kwargs: 
+        policy_mapping_fn=(lambda agent_id, episode, **kwargs: 
                            "choose_action_agent" if agent_id.startswith("choose_action_agent") else "choose_substation_agent")
     )
 
-     # 4. [核心修改] 配置 RLModule
+    # 4. 配置 RLModule
     config.rl_module(
         rl_module_spec=MultiRLModuleSpec(
             rl_module_specs={
                 "choose_substation_agent": RLModuleSpec(
-                    module_class=ChooseSubstationModel # 直接傳遞類別
+                    module_class=ChooseSubstationModel
                 ),
                 "choose_action_agent": RLModuleSpec(
-                    module_class=ChooseActionModel # 直接傳遞類別
+                    module_class=ChooseActionModel
                 ),
             }
         )
     )
 
-    # 5. [核心修改] 啟用 RLModule API
-    # config.training(_enable_rl_module_api=True)
-
-    # 6. 設置框架、資源和 Rollout 配置
+    # 5. 設置框架、資源和 Rollout 配置
     config.framework("torch")
     config.env_runners(
         num_env_runners=tune_params['num_workers'],
@@ -124,41 +117,45 @@ def main():
     
     config.fault_tolerance(restart_failed_env_runners=True)
 
-    # 7. 設置訓練超參數
+    # 6. [核心修改] 設置訓練超參數
+    # 為 PPO 演算法定義 Learner 端的超參數
     learner_hyperparameters = {
-    "lambda_": tune_params['lambda_'],
-    "kl_coeff": tune_params['kl_coeff'],
-    "entropy_coeff": tune_params['entropy_coeff'],
-    "clip_param": 0.2,
-    "vf_loss_coeff": tune_params['vf_loss_coeff'],
-    "vf_clip_param": float(tune_params['vf_clip_param']),
+        "lambda_": tune_params['lambda_'],
+        "kl_coeff": tune_params['kl_coeff'],
+        "entropy_coeff": tune_params['entropy_coeff'],
+        "clip_param": 0.2, 
+        "vf_loss_coeff": tune_params['vf_loss_coeff'],
+        "vf_clip_param": float(tune_params['vf_clip_param']),
     }
 
-    # [修正] 使用新的參數名稱和結構來呼叫 config.training()
+    # 使用新的參數名稱和結構來呼叫 config.training()
     config.training(
         train_batch_size=tune_params['train_batch_size'],
-        num_sgd_iter=tune_params['num_epochs'],
-        
-        # [修正] 'sgd_minibatch_size' 已更名為 'minibatch_size'
-        minibatch_size=tune_params['sgd_minibatch_size'], 
-        
-        # --- 演算法專屬參數 (透過 learner_config_dict 傳入) ---
-        learner_config_dict=learner_hyperparameters
+        # 從 YAML 或預設值中獲取 lr。如果要在 tune 中搜索，這裡的值會被覆蓋
+        lr=tune_params.get('lr', 5e-5), 
+        # [修正] num_sgd_iter 在新版 PPOConfig 中被稱為 num_epochs
+        num_epochs=tune_params['num_epochs'],
+        # [修正] sgd_minibatch_size 在新版 PPOConfig 中被稱為 minibatch_size
+        minibatch_size=tune_params['sgd_minibatch_size'],
+        # 將演算法專屬的超參數打包
+        learner_config_dict=learner_hyperparameters,
     )
     
-    # 8. 設置評估
+    # 7. 設置評估
     env_config_val = yaml_config['env_config_val']
     env_config_val['with_opponent'] = args.with_opponent
     config.evaluation(
         evaluation_interval=args.checkpoint_freq,
-        evaluation_num_workers=1,
+        evaluation_num_env_runners=1,
         evaluation_config={"env_config": env_config_val}
     )
     
     config.callbacks(LogDistributionsCallback)
     
-     # 處理超參數搜索
+    # 8. [核心修改] 處理超參數搜索
     param_space = config.to_dict()
+    # [修正] 'lr' 是頂層鍵，不是在 'training_config' 下
+    param_space['lr'] = tune.loguniform(1e-5, 1e-3)
     param_space['seed'] = tune.randint(0, 1000)
 
     if args.use_tune:
@@ -187,11 +184,11 @@ def main():
                 checkpoint_score_order="max",
                 checkpoint_frequency=args.checkpoint_freq,
             ),
-            callbacks=[WandbLoggerCallback(api_key=WANDB_API_KEY)] if WANDB_API_KEY else []
+            callbacks=[WandbLoggerCallback(api_key=WANDB_API_KEY, project=args.project_name)] if WANDB_API_KEY else []
         )
 
         tuner = tune.Tuner(
-            "PPO", # 使用字串 "PPO"
+            "PPO", 
             param_space=param_space,
             tune_config=tune_config,
             run_config=run_config
@@ -200,7 +197,7 @@ def main():
         results = tuner.fit()
         logging.info(f"Best checkpoint found was: {results.get_best_result().checkpoint}")
 
-    else:
+    else: # 單機不使用 Tune 的訓練流程
         algo = config.build()
         for i in range(args.num_iters):
             result = algo.train()
@@ -211,10 +208,9 @@ def main():
         algo.stop()
 
 if __name__ == "__main__":
-    ray.shutdown()
-    ray.init(ignore_reinit_error=True, logging_level=logging.WARNING)
-    # [移除] 不再需要註冊自訂模型
-    # ray.rllib.models.ModelCatalog.register_custom_model(...)
+    if not ray.is_initialized():
+        ray.init(ignore_reinit_error=True, logging_level=logging.WARNING)
+    
     register_env("HierarchicalGridGym", lambda config: HierarchicalGridGym(config))
     main()
     ray.shutdown()

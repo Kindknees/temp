@@ -2,16 +2,12 @@ import numpy as np
 import grid2op
 import os
 import logging
-# [修正] 導入 gymnasium
 import gymnasium as gym
 from gymnasium.spaces import Box, Discrete, Dict
 
 import random
-import time
-from collections import OrderedDict
-from typing import Any, Dict as TypingDict, Tuple, List as TypingList
+from typing import Any, Dict as TypingDict, Tuple
 
-from grid2op.PlotGrid import PlotMatplot
 from grid2op.gym_compat import GymEnv # grid2op 內部 wrapper，繼續使用
 from grid2op.Reward import L2RPNReward
 from grid2op.Converter import IdToAct
@@ -23,15 +19,29 @@ from ray.rllib.env import MultiAgentEnv
 
 logger = logging.getLogger(__name__)
 
+def convert_obs_to_float32(obs):
+    """
+    Recursively casts all numpy arrays in the observation dict to float32.
+    This is crucial for compatibility with Gymnasium and RLlib.
+    """
+    if isinstance(obs, dict):
+        new_obs = type(obs)()
+        for k, v in obs.items():
+            new_obs[k] = convert_obs_to_float32(v)
+        return new_obs
+    elif isinstance(obs, np.ndarray):
+        return obs.astype(np.float32)
+    else:
+        return obs
+
 class CustomGymEnv(GymEnv):
     """
-    A custom GymEnv wrapper that accepts an action space converter at initialization.
+    A custom GymEnv wrapper that accepts an action space converter at initialization
+    and handles the crucial dtype conversion for observations.
     """
     def __init__(self, env_init, disable_line: int = -1, action_space_converter=None):
-        # 呼叫父類別的建構函式，但不傳入不被接受的 'action_space_converter' 參數
         super().__init__(env_init)
         
-        # 在父類別初始化後，手動設定 action_space
         if action_space_converter is not None:
             self.action_space = action_space_converter
         
@@ -39,8 +49,9 @@ class CustomGymEnv(GymEnv):
         self.reconnect_line = None
 
     def reset(self, *, seed: int | None = None, options: TypingDict[str, Any] | None = None) -> tuple:
-        # Gymnasium API requires reset to accept seed and options
-        super().reset(seed=seed, options=options)
+        if seed is not None:
+            self.init_env.seed(seed)
+
         if self.disable_line == -1:
             g2op_obs = self.init_env.reset()
         else:
@@ -54,8 +65,11 @@ class CustomGymEnv(GymEnv):
                 logging.info(f"Had to skip {i} times to get a valid observation")
         
         gym_obs = self.observation_space.to_gym(g2op_obs)
-        # Gymnasium API requires reset to return obs and info
-        return gym_obs, {}
+
+        # [核心修正] 在觀測值返回給上層 (Gymnasium/RLlib) 之前，立刻轉換其 dtype
+        gym_obs_float32 = convert_obs_to_float32(gym_obs)
+
+        return gym_obs_float32, {}
 
     def step(self, gym_action: Any) -> tuple[Any, float, bool, bool, TypingDict[str, Any]]:
         g2op_act = self.action_space.from_gym(gym_action)
@@ -73,18 +87,16 @@ class CustomGymEnv(GymEnv):
                     self.reconnect_line = line_id_attacked
 
         gym_obs = self.observation_space.to_gym(g2op_obs)
+        
+        # [核心修正] 在觀測值返回給上層 (Gymnasium/RLlib) 之前，立刻轉換其 dtype
+        gym_obs_float32 = convert_obs_to_float32(gym_obs)
+
         terminated = done
-        # [確認] 新增 truncated 旗標
         truncated = info.get('is_truncated', False)
-        # [確認] 回傳 (obs, reward, terminated, truncated, info) tuple
-        return gym_obs, float(reward), terminated, truncated, info
+        
+        return gym_obs_float32, float(reward), terminated, truncated, info
     
     def close(self):
-        """
-        Close the underlying grid2op environment.
-        This overrides the parent close method to avoid calling close() on the
-        observation space, which does not exist.
-        """
         if hasattr(self, 'env'):
             self.env.close()
 
@@ -97,49 +109,35 @@ class Grid_Gym(gym.Env):
         
         self.action_space = self.env_gym.action_space
         self.observation_space = self.env_gym.observation_space
+        if isinstance(self.do_nothing_actions, (np.ndarray, np.number)):
+            self.do_nothing_actions = int(np.asarray(self.do_nothing_actions).item())
 
     def reset(self, *, seed: int | None = None, options: TypingDict[str, Any] | None = None):
+        # [修正] 移除這裡的轉換，因為已在 CustomGymEnv 中完成
         obs, info = self.env_gym.reset(seed=seed, options=options)
-        
-        if self.run_until_threshold:
-            terminated = False
-            truncated = False
-            self.steps = 0
-            # 修正: obs['rho'] 可能是 numpy array
-            while (np.max(obs["rho"]) < self.rho_threshold) and not (terminated or truncated):
-                obs, _, terminated, truncated, _ = self.env_gym.step(self.do_nothing_actions)
-                self.steps += 1
+        self.steps = 0 
         return obs, info
 
-    # [確認] 'step' 方法回傳值已符合 gymnasium API
     def step(self, action: Any):
         obs, reward, terminated, truncated, info = self.env_gym.step(action)
         
         if self.run_until_threshold:
             cum_reward = reward
-            while (np.max(obs["rho"]) < self.rho_threshold) and not (terminated or truncated):
+            # 確保 obs["rho"] 是 numpy array 以使用 .max()
+            current_rho = np.asarray(obs["rho"])
+            while (np.max(current_rho) < self.rho_threshold) and not (terminated or truncated):
                 obs, reward, terminated, truncated, info = self.env_gym.step(self.do_nothing_actions)
                 cum_reward += reward
                 self.steps += 1
+                current_rho = np.asarray(obs["rho"])
             reward = cum_reward
             if terminated or truncated:
                 info["steps"] = self.steps
         
+        # [修正] 移除這裡的轉換，因為已在 CustomGymEnv 中完成
         return obs, reward, terminated, truncated, info
 
 class HierarchicalGridGym(MultiAgentEnv):
-    """
-    一個分層的多智能體環境。
-
-    這個環境中有兩個智能體：
-    1. high_level_agent (高層決策者): 它的任務是選擇一個變電站 (substation)。
-    2. low_level_agent (低層執行者): 在高層選定變電站後，它從該變電站的可用動作中選擇一個具體動作來執行。
-
-    工作流程：
-    1. reset() -> high_level_agent 收到觀測，輪到它行動。
-    2. high_level_agent 執行動作 (選擇變電站) -> low_level_agent 收到觀測 (包含可用動作的 mask)，輪到它行動。
-    3. low_level_agent 執行動作 (選擇具體操作) -> 環境(Grid2Op)前進一步，episode 可能結束，也可能回到步驟 1，輪到 high_level_agent 為下一步做決策。
-    """
     def __init__(self, env_config: TypingDict[str, Any]):
         super().__init__()
         self._skip_env_checking = True
@@ -147,6 +145,7 @@ class HierarchicalGridGym(MultiAgentEnv):
         
         self.low_level_agent_id = "choose_action_agent"
         self.high_level_agent_id = "choose_substation_agent"
+        
         self._agent_ids = {self.low_level_agent_id, self.high_level_agent_id}
 
         self.sub_id_to_action_num = get_sub_id_to_action(self.env_gym.action_space.converter.all_actions, return_action_ix=True)
@@ -156,15 +155,30 @@ class HierarchicalGridGym(MultiAgentEnv):
         self.high_level_pred = None
         self.info = {"steps": 0}
 
-        # [確認] 使用 gymnasium.spaces
+        # [核心修正] 確保 observation space 的 dtype 明確為 float32
+        # 這一步對於讓 RLlib 的模型初始化和檢查通過至關重要
+        regular_obs_space_items = {}
+        for k, v in self.env_gym.observation_space.items():
+            if isinstance(v, gym.spaces.Box):
+                regular_obs_space_items[k] = gym.spaces.Box(
+                    low=v.low.astype(np.float32), 
+                    high=v.high.astype(np.float32), 
+                    shape=v.shape, 
+                    dtype=np.float32
+                )
+            else:
+                regular_obs_space_items[k] = v
+        regular_obs_space = gym.spaces.Dict(regular_obs_space_items)
+
+
         self.observation_space = Dict({
             self.high_level_agent_id: Dict({
-                "regular_obs": self.env_gym.observation_space,
+                "regular_obs": regular_obs_space,
                 "chosen_action": Discrete(self.env_gym.action_space.n)
             }),
             self.low_level_agent_id: Dict({
                 "action_mask": Box(0, 1, shape=(self.env_gym.action_space.n,), dtype=np.float32),
-                "regular_obs": self.env_gym.observation_space,
+                "regular_obs": regular_obs_space,
                 "chosen_substation": Discrete(len(self.num_to_sub))
             })
         })
@@ -183,28 +197,29 @@ class HierarchicalGridGym(MultiAgentEnv):
                 action_mask[aval_actions] = 1.0
         return action_mask
 
-    # [確認] 'reset' 方法簽名和回傳值已符合 MultiAgentEnv API
     def reset(self, *, seed: int | None = None, options: TypingDict[str, Any] | None = None):
+        self.agents = [self.high_level_agent_id]
+        
         self.cur_obs, _ = self.env_gym.reset(seed=seed, options=options)
         self.high_level_pred = None
         
         obs = {
             self.high_level_agent_id: {
                 "regular_obs": self.cur_obs,
-                "chosen_action": 0
+                "chosen_action": np.int64(0) 
             }
         }
-        # [確認] 回傳 (obs_dict, info_dict)
         infos = {self.high_level_agent_id: {}}
         return obs, infos
 
-    # [確認] 'step' 方法簽名和回傳值已符合 MultiAgentEnv API
     def step(self, action_dict: TypingDict[str, Any]):
-        assert len(action_dict) == 1, "分層環境每次只接受一個智能體的動作"
+        agent_id = list(action_dict.keys())[0]
         
-        if self.high_level_agent_id in action_dict:
+        if agent_id == self.high_level_agent_id:
+            self.agents = [self.low_level_agent_id]
             return self._high_level_step(action_dict[self.high_level_agent_id])
         else:
+            self.agents = [self.high_level_agent_id]
             return self._low_level_step(action_dict[self.low_level_agent_id])
 
     def _high_level_step(self, action: int):
@@ -215,17 +230,15 @@ class HierarchicalGridGym(MultiAgentEnv):
             self.low_level_agent_id: {
                 "action_mask": action_mask,
                 "regular_obs": self.cur_obs,
-                "chosen_substation": self.high_level_pred,
+                "chosen_substation": np.int64(self.high_level_pred),
             }
         }
         
-        rewards = {self.low_level_agent_id: 0.0, self.high_level_agent_id: 0.0}
-        # [確認] 使用 terminateds 和 truncateds 字典
+        rewards = {self.low_level_agent_id: 0.0}
         terminateds = {"__all__": False}
         truncateds = {"__all__": False}
-        infos = {self.low_level_agent_id: {}, self.high_level_agent_id: {}}
+        infos = {self.low_level_agent_id: {}}
         
-        # [確認] 回傳值順序正確: obs, rewards, terminateds, truncateds, infos
         return obs, rewards, terminateds, truncateds, infos
 
     def _low_level_step(self, action: int):
@@ -233,7 +246,6 @@ class HierarchicalGridGym(MultiAgentEnv):
         self.info["steps"] = f_info.get("steps", 0)
         self.cur_obs = f_obs
 
-        # [確認] 使用 terminateds 和 truncateds 字典
         terminateds = {"__all__": f_terminated}
         truncateds = {"__all__": f_truncated}
 
@@ -245,12 +257,11 @@ class HierarchicalGridGym(MultiAgentEnv):
         obs = {
             self.high_level_agent_id: {
                 "regular_obs": f_obs,
-                "chosen_action": action
+                "chosen_action": np.int64(action)
             }
         }
-        infos = {self.high_level_agent_id: self.info.copy(), self.low_level_agent_id: {}}
+        infos = {self.high_level_agent_id: self.info.copy()}
         
-        # [確認] 回傳值順序正確: obs, rewards, terminateds, truncateds, infos
         return obs, rewards, terminateds, truncateds, infos
 
 def create_gym_env(**env_config: Any) -> tuple:
@@ -264,7 +275,6 @@ def create_gym_env(**env_config: Any) -> tuple:
     
     logging.info(f"The environment has {len(env.chronics_handler.subpaths)} chronics.")
 
-    # ... (建立 custom_action_space 的部分不變) ...
     custom_action_space = None
     all_actions_dict = {}
     do_nothing_actions = None
@@ -281,12 +291,5 @@ def create_gym_env(**env_config: Any) -> tuple:
                            action_space_converter=custom_action_space)
 
     logging.info("Environment successfully converted to Gym")
-
-    # [修正] 移除覆寫 observation_space 的程式碼。
-    # 必須保留 env_gym.observation_space 物件的原貌，因為它包含了 grid2op
-    # 特有的轉換方法，例如 .to_gym()。將其轉換為純粹的 gymnasium.spaces.Dict
-    # 會導致這些方法遺失，從而引發 AttributeError。
-    # d = {k: v for k, v in env_gym.observation_space.items()}
-    # env_gym.observation_space = gym.spaces.Dict(d)
-
+    
     return env_gym, do_nothing_actions, env, all_actions_dict

@@ -7,7 +7,6 @@ import torch.nn as nn
 
 from ray.rllib.core.rl_module.torch.torch_rl_module import TorchRLModule
 # [修正] 不再需要 RLModuleConfig
-# from ray.rllib.core.rl_module.rl_module import RLModuleConfig
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.typing import Dict, List, ModelConfigDict, TensorType
