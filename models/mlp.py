@@ -5,37 +5,39 @@ import logging
 import torch
 import torch.nn as nn
 
+from ray.rllib.core.rl_module.rl_module import RLModule
 from ray.rllib.core.rl_module.torch.torch_rl_module import TorchRLModule
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.utils.annotations import override
-from ray.rllib.utils.typing import Dict, List, ModelConfigDict, TensorType
-# from ray.rllib.models.torch.torch_action_dist import TorchCategorical # Not strictly needed if relying on self.dist_class
+from ray.rllib.utils.typing import Dict, TensorType
+from ray.rllib.core.rl_module.rl_module import RLModuleConfig
+from ray.rllib.models.torch.torch_distributions import TorchCategorical
 
 FLOAT_MIN = -3.4e38
 
-class BaseHierarchicalRLM(TorchRLModule, nn.Module):
+class BaseHierarchicalRLM(TorchRLModule):
     """
     基礎 RLModule，共享 Critic 網路層。
-    建構子已更新至最新 API。
+    使用新的 RLModule API。
     """
-    def __init__(self, *, observation_space: gym.spaces.Space, 
-                 action_space: gym.spaces.Space, 
-                 model_config: ModelConfigDict, 
-                 **kwargs):
-        nn.Module.__init__(self)
-        super().__init__(
-            observation_space=observation_space,
-            action_space=action_space,
-            model_config=model_config,
-            **kwargs
-        )
-        
-        # Assuming regular_obs after concatenation has this dimension
-        # This should match the sum of dimensions of individual components of regular_obs
-        # Example: if regular_obs = {"comp1": Box(shape=(100,)), "comp2": Box(shape=(52,))} -> input_dim = 152
-        # This needs to be robustly calculated or configured if obs structure changes.
-        # For now, we keep the hardcoded value as in the original file.
-        input_dim = 152 
+    @override(RLModule)
+    def setup(self):
+        """Setup the neural network components."""
+        # Dynamically determine input dimension from observation space
+        obs_space = self.config.observation_space
+        if isinstance(obs_space, gym.spaces.Dict) and "regular_obs" in obs_space.spaces:
+            regular_obs_space = obs_space["regular_obs"]
+            if isinstance(regular_obs_space, gym.spaces.Box):
+                input_dim = regular_obs_space.shape[0]
+            else:
+                # Fallback to hardcoded value if structure is unexpected
+                input_dim = 152
+        else:
+            # Fallback for non-hierarchical case
+            if isinstance(obs_space, gym.spaces.Box):
+                input_dim = obs_space.shape[0]
+            else:
+                input_dim = 152
         
         self.shared_vf_base = nn.Sequential(
             nn.Linear(input_dim, 256), nn.ReLU(inplace=True),
@@ -46,31 +48,54 @@ class BaseHierarchicalRLM(TorchRLModule, nn.Module):
         self.vf_head = nn.Linear(256, 1)
 
     def _get_regular_obs(self, batch: Dict):
-        # batch[SampleBatch.OBS] contains the full observation dictionary from the env
-        # For high-level agent: obs = {"regular_obs": self.cur_obs, "chosen_action": ...}
-        # For low-level agent: obs = {"action_mask": ..., "regular_obs": self.cur_obs, "chosen_substation": ...}
-        # self.cur_obs itself is a dict like {"rho": ..., "p_mw": ..., ...}
+        """Extract and concatenate regular observations from batch."""
         obs = batch[SampleBatch.OBS]
-        regular_obs_dict = obs["regular_obs"] 
-        # Ensure correct device
-        return torch.concat([val.to(self.vf_head.weight.device) if isinstance(val, torch.Tensor) else torch.tensor(val, device=self.vf_head.weight.device) for val in regular_obs_dict.values()], dim=1)
+        regular_obs = obs["regular_obs"]
+        
+        # Get device from model parameters
+        device = next(self.parameters()).device
+        
+        # If regular_obs is already a tensor (from Grid2Op's BoxGymnasiumObsSpace), use it directly
+        if isinstance(regular_obs, torch.Tensor):
+            return regular_obs.to(device)
+        elif isinstance(regular_obs, np.ndarray):
+            return torch.tensor(regular_obs, device=device, dtype=torch.float32)
+        else:
+            # If it's a dictionary, concatenate the values
+            obs_list = []
+            for val in regular_obs.values():
+                if isinstance(val, torch.Tensor):
+                    obs_list.append(val.to(device))
+                else:
+                    obs_list.append(torch.tensor(val, device=device, dtype=torch.float32))
+            return torch.cat(obs_list, dim=1)
 
 
 class ChooseSubstationModel(BaseHierarchicalRLM):
-    """高層決策者，建構子已更新。"""
-    def __init__(self, *, observation_space: gym.spaces.Space, 
-                 action_space: gym.spaces.Space, 
-                 model_config: ModelConfigDict, 
-                 **kwargs):
-        super().__init__(
-            observation_space=observation_space,
-            action_space=action_space,
-            model_config=model_config,
-            **kwargs
-        )
-        self.num_outputs = action_space.n
-        input_dim = 152 # As per BaseHierarchicalRLM for regular_obs
-
+    """高層決策者 - 選擇變電站。"""
+    
+    @override(RLModule)
+    def setup(self):
+        """Setup the neural network components."""
+        super().setup()
+        
+        # Get action space dimension
+        self.num_outputs = self.config.action_space.n
+        
+        # Dynamically determine input dimension
+        obs_space = self.config.observation_space
+        if isinstance(obs_space, gym.spaces.Dict) and "regular_obs" in obs_space.spaces:
+            regular_obs_space = obs_space["regular_obs"]
+            if isinstance(regular_obs_space, gym.spaces.Box):
+                input_dim = regular_obs_space.shape[0]
+            else:
+                input_dim = 152
+        else:
+            if isinstance(obs_space, gym.spaces.Box):
+                input_dim = obs_space.shape[0]
+            else:
+                input_dim = 152
+        
         self.actor_base = nn.Sequential(
             nn.Linear(input_dim, 256), nn.ReLU(inplace=True),
             nn.Linear(256, 256), nn.ReLU(inplace=True),
@@ -78,12 +103,35 @@ class ChooseSubstationModel(BaseHierarchicalRLM):
             nn.Linear(256, 256), nn.ReLU(inplace=True),
         )
         self.logits_head = nn.Linear(256, self.num_outputs)
+        
+        # Initialize action distribution
+        self._action_dist_class = TorchCategorical
 
+    @override(TorchRLModule)
+    def get_train_action_dist_cls(self):
+        """Return the action distribution class for training."""
+        return self._action_dist_class
+
+    @override(TorchRLModule)
+    def get_exploration_action_dist_cls(self):
+        """Return the action distribution class for exploration."""
+        return self._action_dist_class
+
+    @override(TorchRLModule)
+    def get_inference_action_dist_cls(self):
+        """Return the action distribution class for inference."""
+        return self._action_dist_class
+
+    @override(RLModule)
     def _forward_train(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+        """Forward pass for training."""
         regular_obs = self._get_regular_obs(batch)
+        
+        # Actor forward pass
         actor_features = self.actor_base(regular_obs)
         action_logits = self.logits_head(actor_features)
         
+        # Critic forward pass
         vf_features = self.shared_vf_base(regular_obs)
         vf_preds = self.vf_head(vf_features).squeeze(-1)
         
@@ -92,64 +140,59 @@ class ChooseSubstationModel(BaseHierarchicalRLM):
             SampleBatch.VF_PREDS: vf_preds,
         }
 
+    @override(RLModule)
     def _forward_inference(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        regular_obs = self._get_regular_obs(batch) # Input processing
-        actor_features = self.actor_base(regular_obs) # Actor features
-        action_logits = self.logits_head(actor_features) # Logits
-        
-        # Get deterministic actions using the distribution class from RLModule
-        action_dist = self.dist_class(action_logits) 
-        actions = action_dist.deterministic_sample()
+        """Forward pass for inference (deterministic actions)."""
+        regular_obs = self._get_regular_obs(batch)
+        actor_features = self.actor_base(regular_obs)
+        action_logits = self.logits_head(actor_features)
         
         return {
-            SampleBatch.ACTION_DIST_INPUTS: action_logits, # Optional, but good for consistency
-            SampleBatch.ACTIONS: actions,
+            SampleBatch.ACTION_DIST_INPUTS: action_logits,
         }
 
+    @override(RLModule)
     def _forward_exploration(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        regular_obs = self._get_regular_obs(batch) # Input processing
-        actor_features = self.actor_base(regular_obs) # Actor features
-        action_logits = self.logits_head(actor_features) # Logits
-        
-        # Get stochastic actions using the distribution class from RLModule
-        action_dist = self.dist_class(action_logits)
-        actions = action_dist.sample()
-        
-        # Logp is not strictly needed by PPO for sampling env, but can be included if desired
-        # action_logp = action_dist.logp(actions)
+        """Forward pass for exploration (stochastic actions)."""
+        regular_obs = self._get_regular_obs(batch)
+        actor_features = self.actor_base(regular_obs)
+        action_logits = self.logits_head(actor_features)
         
         return {
-            SampleBatch.ACTION_DIST_INPUTS: action_logits, # Optional, good for consistency
-            SampleBatch.ACTIONS: actions,
-            # SampleBatch.ACTION_LOGP: action_logp,
+            SampleBatch.ACTION_DIST_INPUTS: action_logits,
         }
 
 
 class ChooseActionModel(BaseHierarchicalRLM):
-    """低層執行者，建構子已更新。"""
-    def __init__(self, *, observation_space: gym.spaces.Space, 
-                 action_space: gym.spaces.Space, 
-                 model_config: ModelConfigDict, 
-                 **kwargs):
-        super().__init__(
-            observation_space=observation_space,
-            action_space=action_space,
-            model_config=model_config,
-            **kwargs
-        )
-        self.num_outputs = action_space.n
+    """低層執行者 - 在選定的變電站內選擇動作。"""
+    
+    @override(RLModule)
+    def setup(self):
+        """Setup the neural network components."""
+        super().setup()
         
-        # Determine num_substations dynamically from observation_space
-        # obs_space for this agent is Dict({"action_mask": ..., "regular_obs": ..., "chosen_substation": Discrete(N)})
-        if isinstance(observation_space, gym.spaces.Dict) and "chosen_substation" in observation_space.spaces:
-            self.num_substations = observation_space["chosen_substation"].n
+        # Get action space dimension
+        self.num_outputs = self.config.action_space.n
+        
+        # Determine num_substations from observation space
+        obs_space = self.config.observation_space
+        if isinstance(obs_space, gym.spaces.Dict) and "chosen_substation" in obs_space.spaces:
+            self.num_substations = obs_space["chosen_substation"].n
         else:
-            # Fallback or error, assuming 8 if not found, but this should be configured robustly
-            logging.warning("Could not determine num_substations from observation_space, defaulting to 8. Ensure 'chosen_substation' is in obs space.")
+            logging.warning("Could not determine num_substations from observation_space, defaulting to 8.")
             self.num_substations = 8 
+        
+        # Dynamically determine input dimension
+        if isinstance(obs_space, gym.spaces.Dict) and "regular_obs" in obs_space.spaces:
+            regular_obs_space = obs_space["regular_obs"]
+            if isinstance(regular_obs_space, gym.spaces.Box):
+                input_dim_regular_obs = regular_obs_space.shape[0]
+            else:
+                input_dim_regular_obs = 152
+        else:
+            input_dim_regular_obs = 152
             
-        input_dim_regular_obs = 152 # Dimension of concatenated regular_obs
-        input_dim_actor = input_dim_regular_obs + self.num_substations # regular_obs + one_hot_chosen_substation
+        input_dim_actor = input_dim_regular_obs + self.num_substations
         
         self.separate_actor_base = nn.Sequential(
             nn.Linear(input_dim_actor, 256), nn.ReLU(inplace=True),
@@ -159,38 +202,72 @@ class ChooseActionModel(BaseHierarchicalRLM):
         )
         self.logits_head = nn.Linear(256, self.num_outputs)
         
-    def _get_actor_input_and_mask(self, batch: Dict[str, torch.Tensor]):
-        obs = batch[SampleBatch.OBS]
-        regular_obs = self._get_regular_obs(batch) # This gets from obs["regular_obs"]
+        # Initialize action distribution
+        self._action_dist_class = TorchCategorical
+
+    @override(TorchRLModule)
+    def get_train_action_dist_cls(self):
+        """Return the action distribution class for training."""
+        return self._action_dist_class
+
+    @override(TorchRLModule)
+    def get_exploration_action_dist_cls(self):
+        """Return the action distribution class for exploration."""
+        return self._action_dist_class
+
+    @override(TorchRLModule)
+    def get_inference_action_dist_cls(self):
+        """Return the action distribution class for inference."""
+        return self._action_dist_class
         
-        # Ensure chosen_substation is on the correct device and is long type
+    def _get_actor_input_and_mask(self, batch: Dict[str, torch.Tensor]):
+        """Prepare actor input and action mask."""
+        obs = batch[SampleBatch.OBS]
+        regular_obs = self._get_regular_obs(batch)
+        
+        # Get device
+        device = next(self.parameters()).device
+        
+        # Process chosen_substation
         chosen_sub_tensor = obs["chosen_substation"]
         if not isinstance(chosen_sub_tensor, torch.Tensor):
-            chosen_sub_tensor = torch.tensor(chosen_sub_tensor, device=regular_obs.device)
+            chosen_sub_tensor = torch.tensor(chosen_sub_tensor, device=device)
+        else:
+            chosen_sub_tensor = chosen_sub_tensor.to(device)
         chosen_sub_tensor = chosen_sub_tensor.long()
-
-        chosen_sub_one_hot = torch.nn.functional.one_hot(chosen_sub_tensor, num_classes=self.num_substations).float()
         
+        # One-hot encode the chosen substation
+        chosen_sub_one_hot = torch.nn.functional.one_hot(
+            chosen_sub_tensor, num_classes=self.num_substations
+        ).float()
+        
+        # Process action mask
         action_mask = obs["action_mask"]
         if not isinstance(action_mask, torch.Tensor):
-            action_mask = torch.tensor(action_mask, device=regular_obs.device, dtype=torch.float32)
+            action_mask = torch.tensor(action_mask, device=device, dtype=torch.float32)
         else:
-            action_mask = action_mask.to(device=regular_obs.device, dtype=torch.float32)
+            action_mask = action_mask.to(device=device, dtype=torch.float32)
 
+        # Concatenate regular obs with one-hot encoded substation
         actor_input = torch.cat([regular_obs, chosen_sub_one_hot], dim=1)
+        
         return actor_input, action_mask
 
+    @override(RLModule)
     def _forward_train(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+        """Forward pass for training."""
         actor_input, action_mask = self._get_actor_input_and_mask(batch)
         
+        # Actor forward pass
         actor_features = self.separate_actor_base(actor_input)
         action_logits = self.logits_head(actor_features)
         
+        # Apply action mask
         inf_mask = torch.clamp(torch.log(action_mask), min=FLOAT_MIN)
         masked_action_logits = action_logits + inf_mask
         
-        # Critic uses only regular_obs
-        regular_obs = self._get_regular_obs(batch) # Re-extract or pass from _get_actor_input_and_mask
+        # Critic forward pass (uses only regular_obs)
+        regular_obs = self._get_regular_obs(batch)
         vf_features = self.shared_vf_base(regular_obs)
         vf_preds = self.vf_head(vf_features).squeeze(-1)
         
@@ -199,39 +276,36 @@ class ChooseActionModel(BaseHierarchicalRLM):
             SampleBatch.VF_PREDS: vf_preds,
         }
 
+    @override(RLModule)
     def _forward_inference(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+        """Forward pass for inference."""
         actor_input, action_mask = self._get_actor_input_and_mask(batch)
         
+        # Actor forward pass
         actor_features = self.separate_actor_base(actor_input)
         action_logits = self.logits_head(actor_features)
         
+        # Apply action mask
         inf_mask = torch.clamp(torch.log(action_mask), min=FLOAT_MIN)
         masked_action_logits = action_logits + inf_mask
         
-        action_dist = self.dist_class(masked_action_logits)
-        actions = action_dist.deterministic_sample()
-        
         return {
             SampleBatch.ACTION_DIST_INPUTS: masked_action_logits,
-            SampleBatch.ACTIONS: actions,
         }
 
+    @override(RLModule)
     def _forward_exploration(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+        """Forward pass for exploration."""
         actor_input, action_mask = self._get_actor_input_and_mask(batch)
         
+        # Actor forward pass
         actor_features = self.separate_actor_base(actor_input)
         action_logits = self.logits_head(actor_features)
         
+        # Apply action mask
         inf_mask = torch.clamp(torch.log(action_mask), min=FLOAT_MIN)
         masked_action_logits = action_logits + inf_mask
         
-        action_dist = self.dist_class(masked_action_logits)
-        actions = action_dist.sample()
-        
-        # action_logp = action_dist.logp(actions)
-        
         return {
             SampleBatch.ACTION_DIST_INPUTS: masked_action_logits,
-            SampleBatch.ACTIONS: actions,
-            # SampleBatch.ACTION_LOGP: action_logp,
         }

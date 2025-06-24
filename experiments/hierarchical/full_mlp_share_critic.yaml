@@ -1,7 +1,7 @@
 env_config_train: &env_config_train
   env_name: rte_case14_realistic_train
   keep_actions: ['change_bus']
-  keep_observations : ['rho', 'gen_p', 'load_p', 'p_or', 'p_ex', 'timestep_overflow', 'maintenance' , 'topo_vect']
+  keep_observations : ['rho', 'gen_p', 'load_p', 'p_or', 'p_ex', 'timestep_overflow', 'topo_vect']
   medha_actions: True
   rho_threshold: 0.95
   run_until_threshold: True
@@ -10,7 +10,7 @@ env_config_train: &env_config_train
 env_config_val: &env_config_val
   env_name: rte_case14_realistic_val
   keep_actions: ['change_bus']
-  keep_observations : ['rho', 'gen_p', 'load_p', 'p_or', 'p_ex', 'timestep_overflow', 'maintenance' , 'topo_vect']
+  keep_observations : ['rho', 'gen_p', 'load_p', 'p_or', 'p_ex', 'timestep_overflow', 'topo_vect']
   medha_actions: True
   rho_threshold: 0.95
   run_until_threshold: True
