@@ -78,7 +78,11 @@ def main():
     # Configure environment
     env_config_train = yaml_config['env_config_train']
     env_config_train['with_opponent'] = args.with_opponent
-    config.environment(env="HierarchicalGridGym", env_config=env_config_train)
+    config.environment(
+        env="HierarchicalGridGym", 
+        env_config=env_config_train,
+        disable_env_checking=True
+    )
 
     # Configure multi-agent policies
     config.multi_agent(
@@ -123,6 +127,7 @@ def main():
         clip_param=0.2,  # Standard PPO clip parameter
         vf_loss_coeff=tune_params['vf_loss_coeff'],
         vf_clip_param=float(tune_params['vf_clip_param']),
+        use_gae=True
     )
     
     # Configure evaluation

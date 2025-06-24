@@ -4,7 +4,8 @@ import matplotlib
 import io
 import logging
 import torch
-from ray.rllib.algorithms.callbacks import DefaultCallbacks
+# FIX: Import RLlibCallback from its new location and remove DefaultCallbacks
+from ray.rllib.callbacks.callbacks import RLlibCallback
 from ray.rllib.env import BaseEnv
 from ray.rllib.env.single_agent_episode import SingleAgentEpisode
 from ray.rllib.env.multi_agent_episode import MultiAgentEpisode
@@ -38,7 +39,8 @@ color_list = [CB91_Blue, CB91_Pink, CB91_Green, CB91_Amber,
 plt.rcParams['axes.prop_cycle'] = plt.cycler(color=color_list)
 plt.figure(figsize=(14,10), tight_layout=True)
 
-class LogDistributionsCallback(DefaultCallbacks):
+# FIX: Subclass from RLlibCallback instead of DefaultCallbacks
+class LogDistributionsCallback(RLlibCallback):
     """
     Custom callback to log extra information about
     the distribution of observations and actions.
@@ -48,79 +50,57 @@ class LogDistributionsCallback(DefaultCallbacks):
     def on_episode_end(
         self,
         *,
-        worker: RolloutWorker,
-        base_env: BaseEnv,
-        policies: Dict[PolicyID, Policy],
         episode: Union[SingleAgentEpisode, MultiAgentEpisode, Exception],
+        worker: Optional[RolloutWorker] = None,
+        base_env: Optional[BaseEnv] = None,
+        policies: Optional[Dict[PolicyID, Policy]] = None,
         env_index: Optional[int] = None,
         **kwargs
     ) -> None:
         """Called when an episode ends."""
-        # Handle the case where episode might be an Exception
         if isinstance(episode, Exception):
             return
             
-        # Handle MultiAgentEpisode
-        if isinstance(episode, MultiAgentEpisode):
-            # Get the last info from one of the agents
-            # MultiAgentEpisode stores per-agent data differently
-            try:
-                # Get all agent IDs in the episode
-                agent_ids = episode.get_agents()
-                
+        try:
+            if isinstance(episode, MultiAgentEpisode):
                 steps_in_episode = None
-                
-                # First try to get info from the high-level agent
+                agent_id_with_info = None
+                agent_ids = episode.get_agents()
+
+                # Find an agent that has the 'steps_in_episode' information
                 if "choose_substation_agent" in agent_ids:
-                    # Get the last info for this specific agent
                     agent_infos = episode.get_infos("choose_substation_agent")
-                    if agent_infos and len(agent_infos) > 0:
-                        last_info = agent_infos[-1]
-                        if isinstance(last_info, dict):
-                            steps_in_episode = last_info.get("steps_in_episode") or last_info.get("steps")
+                    if agent_infos and len(agent_infos) > 0 and isinstance(agent_infos[-1], dict):
+                        steps_in_episode = agent_infos[-1].get("steps_in_episode") or agent_infos[-1].get("steps")
+                        if steps_in_episode is not None:
+                            agent_id_with_info = "choose_substation_agent"
                 
-                # If not found, try other agents
-                if steps_in_episode is None:
+                if steps_in_episode is None and agent_ids:
                     for agent_id in agent_ids:
                         agent_infos = episode.get_infos(agent_id)
-                        if agent_infos and len(agent_infos) > 0:
-                            last_info = agent_infos[-1]
-                            if isinstance(last_info, dict):
-                                steps_in_episode = last_info.get("steps_in_episode") or last_info.get("steps")
-                                if steps_in_episode is not None:
-                                    break
+                        if agent_infos and len(agent_infos) > 0 and isinstance(agent_infos[-1], dict):
+                            steps_in_episode = agent_infos[-1].get("steps_in_episode") or agent_infos[-1].get("steps")
+                            if steps_in_episode is not None:
+                                agent_id_with_info = agent_id
+                                break
                 
-                # Set the custom metric
-                if steps_in_episode is not None:
-                    episode.set_custom_metrics(key="num_env_steps", value=steps_in_episode)
-                else:
-                    # Fallback to episode length
-                    episode.set_custom_metrics(key="num_env_steps", value=len(episode))
-                    
-            except Exception as e:
-                logger.warning(f"Error processing MultiAgentEpisode: {e}")
-                episode.set_custom_metrics(key="num_env_steps", value=len(episode))
-                
-        # Handle SingleAgentEpisode
-        elif isinstance(episode, SingleAgentEpisode):
-            try:
-                # Get all infos
-                infos = episode.get_infos()
-                
+                # FIX: Attach metric to the specific SingleAgentEpisode's user_data
+                target_agent_id = agent_id_with_info or next(iter(agent_ids), None)
+                if target_agent_id:
+                    value = steps_in_episode if steps_in_episode is not None else len(episode)
+                    episode.agent_episodes[target_agent_id].user_data["num_env_steps"] = value
+
+            elif isinstance(episode, SingleAgentEpisode):
                 steps_in_episode = None
-                if infos and len(infos) > 0:
-                    last_info = infos[-1]
-                    if isinstance(last_info, dict):
-                        steps_in_episode = last_info.get("steps_in_episode") or last_info.get("steps")
+                infos = episode.get_infos()
+                if infos and len(infos) > 0 and isinstance(infos[-1], dict):
+                    steps_in_episode = infos[-1].get("steps_in_episode") or infos[-1].get("steps")
                 
-                if steps_in_episode is not None:
-                    episode.set_custom_metrics(key="num_env_steps", value=steps_in_episode)
-                else:
-                    episode.set_custom_metrics(key="num_env_steps", value=len(episode))
-                    
-            except Exception as e:
-                logger.warning(f"Error processing SingleAgentEpisode: {e}")
-                episode.set_custom_metrics(key="num_env_steps", value=len(episode))
+                value = steps_in_episode if steps_in_episode is not None else len(episode)
+                episode.user_data["num_env_steps"] = value
+                
+        except Exception as e:
+            logger.warning(f"Error processing episode in callback: {e}")
             
     def on_train_result(
         self,
