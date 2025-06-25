@@ -1,20 +1,8 @@
-# Hierarchical Reinforcement Learning for Power Network Topology Control
-
-This repository contains the code for experiments conducted for my master thesis realized at Amsterdam Machine Learning Lab and TenneT.
-
-## Paper
-
-Please see the paper **Hierarchical Reinforcement Learning for Power Network Topology Control** (link coming soon) for more details. If this code is useful please cite our paper:
-
-*BibTeX coming soon*
-
 ### Dependencies 
 
 The `env.yml` file can be used to install the dependencies. 
 
 ### Data setup
-
-We run our experiments with the `rte_case14_realistic` modeled in [Grid2Op](https://grid2op.readthedocs.io/en/latest/quickstart.html) package. The 1000 chronics (=episodes) are divided into a train, validation, and test set. The chronic numbers that we use for each split are saved in NumPy arrays in the `grid2op_env/train_val_test_split` folder.
 
 The following has to be run only once to download and set up the environment:
 
