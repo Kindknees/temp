@@ -44,6 +44,20 @@ def main():
     np.random.seed(2137)
     torch.manual_seed(2137)
     
+    # 偵測是否有可用的 GPU
+    use_gpu = torch.cuda.is_available()
+    if use_gpu:
+        logging.info("GPU is available, configuring Ray to use GPU resources.")
+    else:
+        logging.info("GPU is not available, using CPU resources.")
+
+    # 根據是否有 GPU 來設定資源
+    # Learner 是訓練的核心，如果用 GPU，就給它一整張卡
+    num_gpus_for_learner = 1 if use_gpu else 0
+    # EnvRunner/Worker 主要是做推論(inference)，通常不需要整張卡，可以分配少量資源
+    # 如果 worker 數量多，可以設定 0.1, 0.2 等小數，讓大家共享 GPU
+    num_gpus_per_worker = 0.1 if use_gpu else 0
+
     # Register environment with the serializable wrapper
     # register_env("HierarchicalGridGym", lambda config: SerializableHierarchicalGridGym(config))
 
@@ -61,7 +75,8 @@ def main():
     parser.add_argument("--grace_period", type=int, default=400, help="Minimum number of iterations before a trial can be early stopped.")
     parser.add_argument("--num_iters_no_improvement", type=int, default=200, help="Number of iterations with no improvement before stopping.")
     parser.add_argument("--with_opponent", action=argparse.BooleanOptionalAction, default=False, help="Whether to use an opponent or not.")
-    
+    parser.add_argument("--num_workers", type=int, default=1, help="Number of rollout workers to use. Set to 0 for Colab/low-resource environments.")
+
     args = parser.parse_args()
 
     logging.info("Training the agent with the following parameters:")
@@ -109,9 +124,9 @@ def main():
     # Configure framework and resources
     config.framework("torch")
     config.env_runners(
-        num_env_runners=tune_params['num_workers'],
+        num_env_runners=args.num_workers,
         rollout_fragment_length=tune_params['rollout_fragment_length'],
-         # from community
+        num_gpus_per_env_runner=num_gpus_per_worker,
         add_default_connectors_to_env_to_module_pipeline=True,
         add_default_connectors_to_module_to_env_pipeline=True,
         batch_mode="complete_episodes"
@@ -122,6 +137,10 @@ def main():
     config.api_stack(enable_rl_module_and_learner=True,
                      enable_env_runner_and_connector_v2=True)
     config.experimental(_validate_config=False)
+
+    config.resources(
+        num_gpus_per_learner=num_gpus_for_learner
+    )
 
     # Configure training hyperparameters
     # Note: In newer RLlib versions, PPO-specific parameters are set directly
