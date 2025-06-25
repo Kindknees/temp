@@ -113,7 +113,8 @@ def main():
         rollout_fragment_length=tune_params['rollout_fragment_length'],
          # from community
         add_default_connectors_to_env_to_module_pipeline=True,
-        add_default_connectors_to_module_to_env_pipeline=True
+        add_default_connectors_to_module_to_env_pipeline=True,
+        batch_mode="complete_episodes"
     )
     
     config.fault_tolerance(restart_failed_env_runners=True)
@@ -153,7 +154,7 @@ def main():
     
     # Handle hyperparameter search
     param_space = config.to_dict()
-    param_space['lr'] = tune.loguniform(1e-5, 1e-3)
+    param_space['lr'] = tune.loguniform(1e-6, 1e-4)
     param_space['seed'] = tune.randint(0, 1000)
 
     if args.use_tune:
@@ -213,6 +214,7 @@ def main():
         algo.stop()
 
 if __name__ == "__main__":
+    os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
     if not ray.is_initialized():
         ray.init(ignore_reinit_error=True, logging_level=logging.WARNING)
     
