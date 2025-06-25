@@ -450,13 +450,24 @@ def remove_redundant_actions(all_actions, reference_substation_indices, nb_eleme
     # Mask the indices that have 3 or less connected elements as they 
     # by defintion have only one configuration
     redundant_action_indices = np.array(reference_substation_indices)[np.argwhere(np.array(nb_elements)<=3).flatten()]
-    left_do_nothing_action = redundant_action_indices[[0]] # leave one redundant action as a do nothing action
 
-    start_id_to_remove = 0 if remove_all_redundant_actions else 1 # optionally leave one redundant action as a do nothing action
-    for index in sorted(redundant_action_indices[start_id_to_remove:], reverse=True): # [1:] assumes the 0th action is the do-nothing action
-        del all_actions[index]
-        if all_actions_dict is not None:
-            del all_actions_dict[index]
+    # If there are redundant actions (from substations with <=3 elements),
+    # we select one to keep and delete the rest.
+    if redundant_action_indices.size > 0:
+        left_do_nothing_action = redundant_action_indices[[0]] # leave one redundant action as a do nothing action
+
+        start_id_to_remove = 0 if remove_all_redundant_actions else 1 # optionally leave one redundant action
+        for index in sorted(redundant_action_indices[start_id_to_remove:], reverse=True):
+            del all_actions[index]
+            if all_actions_dict is not None:
+                del all_actions_dict[index]
+    # If there are NO redundant actions, we don't delete anything.
+    # We still need to define a global "do-nothing" action. We can pick the
+    # do-nothing action from the first substation.
+    else:
+        # This assumes reference_substation_indices is not empty, which is a safe
+        # assumption based on the logic in create_action_space.
+        left_do_nothing_action = [reference_substation_indices[0]]
 
     if all_actions_dict is not None:
         return all_actions, list(left_do_nothing_action), all_actions_dict
@@ -476,7 +487,7 @@ if __name__ == '__main__':
    
   print("Keys", keys)
   print("NB elements", nb_elements)
-  print(len(all_actions))
+#   print(len(all_actions))
   print("-"*40)
-  print(DN_actions)
+#   print(DN_actions)
 

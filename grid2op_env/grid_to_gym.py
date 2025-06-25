@@ -2,7 +2,7 @@ import numpy as np
 import grid2op
 import os
 import logging
-from typing import Any, Dict as TypingDict, Tuple
+from typing import Any, Dict as TypingDict, Tuple, Set
 
 # 使用現代的 Gymnasium API
 import gymnasium as gym
@@ -186,22 +186,29 @@ class HierarchicalGridGym(MultiAgentEnv):
     """
     將電網控制問題轉換為一個階層式的多智慧體環境。
     """
-    def __init__(self, env_config: TypingDict[str, Any]):
+    def __init__(self, env_config: TypingDict[str, Any] = None):
+        # Initialize required attributes before calling super().__init__()
+        # Define agent IDs
+        self.high_level_agent_id = "choose_substation_agent"
+        self.low_level_agent_id = "choose_action_agent"
+        self._agent_ids = {self.high_level_agent_id, self.low_level_agent_id}
+        
+        # Initialize agents and possible_agents as required by MultiAgentEnv
+        self.agents = []  # Will be updated during episode
+        self.possible_agents = [self.high_level_agent_id, self.low_level_agent_id]
+        
+        # Now call super().__init__()
         super().__init__()
+        
+        # Handle None config
+        if env_config is None:
+            env_config = {}
+            
         self._skip_env_checking = True
         
         # 建立底層的單一智慧體環境
         self.env_gym, self.do_nothing_action_idx, _, all_actions_dict = create_gym_env(**env_config)
         
-        # 定義高層和低層智慧體的名稱
-        self.high_level_agent_id = "choose_substation_agent"
-        self.low_level_agent_id = "choose_action_agent"
-        self._agent_ids = {self.high_level_agent_id, self.low_level_agent_id}
-        
-        # Required by RLlib: define possible agents and current agents
-        self.possible_agents = [self.high_level_agent_id, self.low_level_agent_id]
-        self.agents = []  # Will be updated during reset and step
-
         # 建立從變電站 ID 到其對應動作索引的映射
         self.sub_id_to_action_num = get_sub_id_to_action(
             self.env_gym.action_space.converter.all_actions, 
@@ -219,7 +226,8 @@ class HierarchicalGridGym(MultiAgentEnv):
         # 定義階層式智慧體的觀測與動作空間
         regular_obs_space = self.env_gym.observation_space
 
-        self.observation_space = Dict({
+        # Define _obs_space and _action_space as expected by RLlib
+        self._obs_space = {
             self.high_level_agent_id: Dict({
                 "regular_obs": regular_obs_space,
                 "chosen_action": Discrete(num_actions)
@@ -229,12 +237,89 @@ class HierarchicalGridGym(MultiAgentEnv):
                 "regular_obs": regular_obs_space,
                 "chosen_substation": Discrete(num_substations)
             })
-        })
+        }
         
-        self.action_space = Dict({
+        self._action_space = {
             self.high_level_agent_id: Discrete(num_substations),
             self.low_level_agent_id: self.env_gym.action_space
-        })
+        }
+
+    @property
+    def observation_space(self):
+        """Return the observation space for all agents."""
+        # RLlib expects a dict, not a gym.spaces.Dict
+        return self._obs_space
+
+    @property
+    def action_space(self):
+        """Return the action space for all agents."""
+        # RLlib expects a dict, not a gym.spaces.Dict
+        return self._action_space
+
+    @property
+    def observation_space_sample(self):
+        """Return a sample from the observation space for all agents."""
+        return {
+            agent_id: space.sample() 
+            for agent_id, space in self._obs_space.items()
+        }
+
+    @property
+    def action_space_sample(self):
+        """Return a sample from the action space for all agents."""
+        return {
+            agent_id: space.sample() 
+            for agent_id, space in self._action_space.items()
+        }
+
+    def get_agent_ids(self) -> Set[Any]:
+        """Return the set of all possible agent IDs."""
+        return self._agent_ids
+        
+    def observation_space_contains(self, x: TypingDict[str, Any]) -> bool:
+        """Check whether the given observation is valid for this env."""
+        if not isinstance(x, dict):
+            return False
+        for agent_id, obs in x.items():
+            if agent_id not in self._obs_space:
+                return False
+            if not self._obs_space[agent_id].contains(obs):
+                return False
+        return True
+
+    def action_space_contains(self, x: TypingDict[str, Any]) -> bool:
+        """Check whether the given action is valid for this env."""
+        if not isinstance(x, dict):
+            return False
+        for agent_id, action in x.items():
+            if agent_id not in self._action_space:
+                return False
+            if not self._action_space[agent_id].contains(action):
+                return False
+        return True
+
+    def action_space_sample(self, agent_ids: list = None) -> TypingDict[str, Any]:
+        """Sample actions for the given agents."""
+        if agent_ids is None:
+            agent_ids = self._agent_ids
+        return {
+            agent_id: self._action_space[agent_id].sample()
+            for agent_id in agent_ids
+        }
+
+    def observation_space_sample(self, agent_ids: list = None) -> TypingDict[str, Any]:
+        """Sample observations for the given agents."""
+        if agent_ids is None:
+            agent_ids = self._agent_ids
+        return {
+            agent_id: self._obs_space[agent_id].sample()
+            for agent_id in agent_ids
+        }
+        
+    def close(self):
+        """Close the environment."""
+        if hasattr(self, 'env_gym') and self.env_gym is not None:
+            self.env_gym.close()
 
     def reset(self, *, seed: int | None = None, options: TypingDict[str, Any] | None = None) -> tuple[TypingDict, TypingDict]:
         self.current_obs, _ = self.env_gym.reset(seed=seed, options=options)
@@ -286,7 +371,8 @@ class HierarchicalGridGym(MultiAgentEnv):
         # FIX: The rewards dict must only contain keys for currently active agents.
         # At this point, only the low-level agent is active for the next step.
         rewards = {self.low_level_agent_id: 0.0}
-        terminateds, truncateds = {"__all__": False}, {"__all__": False}
+        terminateds = {"__all__": False}
+        truncateds = {"__all__": False}
         
         # FIX: Return a complete info dict.
         infos = {self.high_level_agent_id: {}, self.low_level_agent_id: {}}
@@ -342,6 +428,10 @@ def create_gym_env(**env_config: Any) -> tuple:
     """
     環境工廠函式：初始化 Grid2Op，並使用 medha_action_space 建立自訂動作空間。
     """
+    # Handle None config
+    if env_config is None:
+        env_config = {}
+        
     env_name = env_config.get("env_name", "rte_case14_realistic")
     with_opponent = env_config.get("with_opponent", False)
     keep_observations = env_config.get("keep_observations", None)

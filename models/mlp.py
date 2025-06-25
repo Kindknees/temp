@@ -12,6 +12,7 @@ from ray.rllib.utils.annotations import override
 from ray.rllib.utils.typing import Dict, TensorType
 from ray.rllib.core.rl_module.rl_module import RLModuleConfig
 from ray.rllib.models.torch.torch_distributions import TorchCategorical
+from ray.rllib.core.columns import Columns
 
 FLOAT_MIN = -3.4e38
 
@@ -49,8 +50,15 @@ class BaseHierarchicalRLM(TorchRLModule):
 
     def _get_regular_obs(self, batch: Dict):
         """Extract and concatenate regular observations from batch."""
-        obs = batch[SampleBatch.OBS]
-        regular_obs = obs["regular_obs"]
+        # Use new Columns API
+        obs = batch.get(Columns.OBS, batch.get(SampleBatch.OBS))
+        
+        # Handle both old and new column names
+        if isinstance(obs, dict) and "regular_obs" in obs:
+            regular_obs = obs["regular_obs"]
+        else:
+            # For non-hierarchical observations
+            regular_obs = obs
         
         # Get device from model parameters
         device = next(self.parameters()).device
@@ -122,9 +130,8 @@ class ChooseSubstationModel(BaseHierarchicalRLM):
         """Return the action distribution class for inference."""
         return self._action_dist_class
 
-    @override(RLModule)
-    def _forward_train(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        """Forward pass for training."""
+    def _common_forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Common forward pass for all modes."""
         regular_obs = self._get_regular_obs(batch)
         
         # Actor forward pass
@@ -135,32 +142,26 @@ class ChooseSubstationModel(BaseHierarchicalRLM):
         vf_features = self.shared_vf_base(regular_obs)
         vf_preds = self.vf_head(vf_features).squeeze(-1)
         
+        # Use new Columns API
         return {
-            SampleBatch.ACTION_DIST_INPUTS: action_logits,
-            SampleBatch.VF_PREDS: vf_preds,
+            Columns.ACTION_DIST_INPUTS: action_logits,
+            Columns.VF_PREDS: vf_preds,
         }
+
+    @override(RLModule)
+    def _forward_train(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+        """Forward pass for training."""
+        return self._common_forward(batch)
 
     @override(RLModule)
     def _forward_inference(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        """Forward pass for inference (deterministic actions)."""
-        regular_obs = self._get_regular_obs(batch)
-        actor_features = self.actor_base(regular_obs)
-        action_logits = self.logits_head(actor_features)
-        
-        return {
-            SampleBatch.ACTION_DIST_INPUTS: action_logits,
-        }
+        """Forward pass for inference."""
+        return self._common_forward(batch)
 
     @override(RLModule)
     def _forward_exploration(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        """Forward pass for exploration (stochastic actions)."""
-        regular_obs = self._get_regular_obs(batch)
-        actor_features = self.actor_base(regular_obs)
-        action_logits = self.logits_head(actor_features)
-        
-        return {
-            SampleBatch.ACTION_DIST_INPUTS: action_logits,
-        }
+        """Forward pass for exploration."""
+        return self._common_forward(batch)
 
 
 class ChooseActionModel(BaseHierarchicalRLM):
@@ -222,7 +223,8 @@ class ChooseActionModel(BaseHierarchicalRLM):
         
     def _get_actor_input_and_mask(self, batch: Dict[str, torch.Tensor]):
         """Prepare actor input and action mask."""
-        obs = batch[SampleBatch.OBS]
+        # Use new Columns API
+        obs = batch.get(Columns.OBS, batch.get(SampleBatch.OBS))
         regular_obs = self._get_regular_obs(batch)
         
         # Get device
@@ -252,10 +254,9 @@ class ChooseActionModel(BaseHierarchicalRLM):
         actor_input = torch.cat([regular_obs, chosen_sub_one_hot], dim=1)
         
         return actor_input, action_mask
-
-    @override(RLModule)
-    def _forward_train(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        """Forward pass for training."""
+    
+    def _common_forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """A common forward pass for all modes."""
         actor_input, action_mask = self._get_actor_input_and_mask(batch)
         
         # Actor forward pass
@@ -271,41 +272,23 @@ class ChooseActionModel(BaseHierarchicalRLM):
         vf_features = self.shared_vf_base(regular_obs)
         vf_preds = self.vf_head(vf_features).squeeze(-1)
         
+        # Use new Columns API
         return {
-            SampleBatch.ACTION_DIST_INPUTS: masked_action_logits,
-            SampleBatch.VF_PREDS: vf_preds,
+            Columns.ACTION_DIST_INPUTS: masked_action_logits,
+            Columns.VF_PREDS: vf_preds,
         }
+
+    @override(RLModule)
+    def _forward_train(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+        """Forward pass for training."""
+        return self._common_forward(batch)
 
     @override(RLModule)
     def _forward_inference(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
         """Forward pass for inference."""
-        actor_input, action_mask = self._get_actor_input_and_mask(batch)
-        
-        # Actor forward pass
-        actor_features = self.separate_actor_base(actor_input)
-        action_logits = self.logits_head(actor_features)
-        
-        # Apply action mask
-        inf_mask = torch.clamp(torch.log(action_mask), min=FLOAT_MIN)
-        masked_action_logits = action_logits + inf_mask
-        
-        return {
-            SampleBatch.ACTION_DIST_INPUTS: masked_action_logits,
-        }
+        return self._common_forward(batch)
 
     @override(RLModule)
     def _forward_exploration(self, batch: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
         """Forward pass for exploration."""
-        actor_input, action_mask = self._get_actor_input_and_mask(batch)
-        
-        # Actor forward pass
-        actor_features = self.separate_actor_base(actor_input)
-        action_logits = self.logits_head(actor_features)
-        
-        # Apply action mask
-        inf_mask = torch.clamp(torch.log(action_mask), min=FLOAT_MIN)
-        masked_action_logits = action_logits + inf_mask
-        
-        return {
-            SampleBatch.ACTION_DIST_INPUTS: masked_action_logits,
-        }
+        return self._common_forward(batch)

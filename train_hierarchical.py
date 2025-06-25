@@ -102,8 +102,10 @@ def main():
                     module_class=ChooseActionModel
                 ),
             }
-        )
+        ),
     )
+
+    config.api_stack(enable_rl_module_and_learner=True)
 
     # Configure framework and resources
     config.framework("torch")
@@ -113,6 +115,9 @@ def main():
     )
     
     config.fault_tolerance(restart_failed_env_runners=True)
+
+    config.api_stack(enable_rl_module_and_learner=True,
+                     enable_env_runner_and_connector_v2=True)
 
     # Configure training hyperparameters
     # Note: In newer RLlib versions, PPO-specific parameters are set directly
@@ -127,7 +132,7 @@ def main():
         clip_param=0.2,  # Standard PPO clip parameter
         vf_loss_coeff=tune_params['vf_loss_coeff'],
         vf_clip_param=float(tune_params['vf_clip_param']),
-        use_gae=True
+        use_gae=True,
     )
     
     # Configure evaluation
