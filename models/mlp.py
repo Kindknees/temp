@@ -13,10 +13,14 @@ from ray.rllib.utils.typing import Dict, TensorType
 from ray.rllib.core.rl_module.rl_module import RLModuleConfig
 from ray.rllib.models.torch.torch_distributions import TorchCategorical
 from ray.rllib.core.columns import Columns
+# --- CHANGE 1: Import ValueFunctionAPI ---
+from ray.rllib.core.rl_module.apis.value_function_api import ValueFunctionAPI
 
 FLOAT_MIN = -3.4e38
 
-class BaseHierarchicalRLM(TorchRLModule):
+
+# --- CHANGE 2: Inherit from ValueFunctionAPI ---
+class BaseHierarchicalRLM(TorchRLModule, ValueFunctionAPI):
     """
     基礎 RLModule，共享 Critic 網路層。
     使用新的 RLModule API。
@@ -77,6 +81,23 @@ class BaseHierarchicalRLM(TorchRLModule):
                 else:
                     obs_list.append(torch.tensor(val, device=device, dtype=torch.float32))
             return torch.cat(obs_list, dim=1)
+
+    # --- CHANGE 3: Implement compute_values method ---
+    @override(ValueFunctionAPI)
+    def compute_values(self, batch: Dict, **kwargs):
+        """
+        Computes the value function estimates for the given batch of observations.
+        This is required by PPO's GAE postprocessing connector.
+        The batch passed here during postprocessing might only contain OBS.
+        """
+        regular_obs = self._get_regular_obs(batch)
+
+        # Value function forward pass.
+        # No need for torch.no_grad(), the caller (connector) will handle the context.
+        vf_features = self.shared_vf_base(regular_obs)
+        vf_preds = self.vf_head(vf_features).squeeze(-1)
+        
+        return vf_preds
 
 
 class ChooseSubstationModel(BaseHierarchicalRLM):

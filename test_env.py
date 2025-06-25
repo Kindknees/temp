@@ -1,105 +1,72 @@
 #!/usr/bin/env python3
 """
-Test script to verify HierarchicalGridGym environment works correctly.
-Run this before training to ensure the environment is properly set up.
+Test script to verify SerializableHierarchicalGridGym works correctly.
 """
 
-import sys
+import pickle
 import yaml
 import ray
 from ray.tune.registry import register_env
 
-# Add the project root to the Python path if needed
-# sys.path.append('/path/to/your/project')
+# Add path for imports
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from grid2op_env.grid_to_gym import HierarchicalGridGym
+from grid2op_env.grid2op_wrapper import SerializableHierarchicalGridGym
 
-def test_environment():
-    """Test the hierarchical environment setup."""
-    
-    print("1. Testing environment initialization...")
+def test_basic_functionality():
+    """Test basic environment functionality."""
+    print("1. Testing basic environment functionality...")
     
     # Load config
     with open("experiments/hierarchical/full_mlp_share_critic.yaml") as f:
         yaml_config = yaml.safe_load(f)
     
     env_config = yaml_config['env_config_train']
-    env_config['with_opponent'] = False  # Start without opponent for testing
+    env_config['with_opponent'] = False
     
     try:
         # Create environment
-        env = HierarchicalGridGym(env_config)
+        env = SerializableHierarchicalGridGym(env_config)
         print("✓ Environment created successfully")
         
-        # Check observation and action spaces
-        print("\n2. Checking spaces...")
-        print(f"Observation space keys: {list(env.observation_space.keys())}")
-        print(f"Action space keys: {list(env.action_space.keys())}")
-        print(f"Agent IDs: {env.get_agent_ids()}")
-        print("✓ Spaces look correct")
-        
         # Test reset
-        print("\n3. Testing reset...")
         obs, info = env.reset()
-        print(f"Initial observation keys: {list(obs.keys())}")
-        print(f"Active agents after reset: {env.agents}")
-        print("✓ Reset successful")
+        print(f"✓ Reset successful, initial agent: {env.agents}")
         
-        # Test step with high-level agent
-        print("\n4. Testing high-level agent step...")
-        high_level_action = env.action_space[env.high_level_agent_id].sample()
-        action_dict = {env.high_level_agent_id: high_level_action}
-        obs, rewards, terminateds, truncateds, infos = env.step(action_dict)
-        print(f"Observation keys after high-level step: {list(obs.keys())}")
-        print(f"Active agents after high-level step: {env.agents}")
-        print("✓ High-level step successful")
+        # Test a few steps
+        for i in range(3):
+            if env.agents:
+                agent_id = env.agents[0]
+                if agent_id == env.high_level_agent_id:
+                    action = env.action_space[agent_id].sample()
+                else:
+                    # For low-level agent, choose a valid action
+                    action_mask = obs[agent_id]["action_mask"]
+                    valid_actions = [j for j in range(len(action_mask)) if action_mask[j] > 0]
+                    action = valid_actions[0] if valid_actions else 0
+                
+                action_dict = {agent_id: action}
+                obs, rewards, terminateds, truncateds, infos = env.step(action_dict)
+                print(f"✓ Step {i+1} successful, next agents: {env.agents}")
+                
+                if terminateds["__all__"]:
+                    break
         
-        # Test step with low-level agent
-        print("\n5. Testing low-level agent step...")
-        if env.low_level_agent_id in obs:
-            # Get a valid action based on action mask
-            action_mask = obs[env.low_level_agent_id]["action_mask"]
-            valid_actions = [i for i in range(len(action_mask)) if action_mask[i] > 0]
-            if valid_actions:
-                low_level_action = valid_actions[0]
-            else:
-                low_level_action = 0
-            
-            action_dict = {env.low_level_agent_id: low_level_action}
-            obs, rewards, terminateds, truncateds, infos = env.step(action_dict)
-            print(f"Observation keys after low-level step: {list(obs.keys())}")
-            print(f"Active agents after low-level step: {env.agents}")
-            print(f"Episode done: {terminateds['__all__']}")
-            print("✓ Low-level step successful")
-        
-        # Test close
-        print("\n6. Testing close...")
         env.close()
-        print("✓ Environment closed successfully")
-        
-        print("\n✅ All environment tests passed!")
+        print("✓ Basic functionality test passed!")
+        return True
         
     except Exception as e:
-        print(f"\n❌ Error during testing: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
         return False
-    
-    return True
 
-def test_with_ray():
-    """Test environment with Ray registration."""
-    print("\n7. Testing with Ray...")
-    
-    # Initialize Ray if not already initialized
-    if not ray.is_initialized():
-        ray.init(ignore_reinit_error=True)
-    
-    # Register environment
-    register_env("HierarchicalGridGym", lambda config: HierarchicalGridGym(config))
-    
-    # Try to create environment through Ray
-    from ray.rllib.env.env_context import EnvContext
+def test_serialization():
+    """Test that the environment can be pickled."""
+    print("\n2. Testing serialization...")
     
     with open("experiments/hierarchical/full_mlp_share_critic.yaml") as f:
         yaml_config = yaml.safe_load(f)
@@ -107,26 +74,190 @@ def test_with_ray():
     env_config = yaml_config['env_config_train']
     env_config['with_opponent'] = False
     
-    env_context = EnvContext(env_config, worker_index=0, num_workers=1)
-    env = HierarchicalGridGym(env_context)
+    try:
+        # Create environment
+        env = SerializableHierarchicalGridGym(env_config)
+        
+        # Try to pickle it
+        pickled = pickle.dumps(env)
+        print("✓ Environment pickled successfully")
+        
+        # Try to unpickle it
+        env2 = pickle.loads(pickled)
+        print("✓ Environment unpickled successfully")
+        
+        # Test that unpickled env works
+        obs, _ = env2.reset()
+        print("✓ Unpickled environment can reset")
+        
+        env.close()
+        env2.close()
+        return True
+        
+    except Exception as e:
+        print(f"❌ Serialization failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_with_ray():
+    """Test environment with Ray."""
+    print("\n3. Testing with Ray...")
     
-    obs, _ = env.reset()
-    print("✓ Ray environment creation successful")
+    # Initialize Ray
+    if not ray.is_initialized():
+        ray.init(ignore_reinit_error=True)
     
-    env.close()
-    ray.shutdown()
+    try:
+        # Register environment
+        register_env("SerializableHierarchicalGridGym", 
+                    lambda config: SerializableHierarchicalGridGym(config))
+        
+        # Load config
+        with open("experiments/hierarchical/full_mlp_share_critic.yaml") as f:
+            yaml_config = yaml.safe_load(f)
+        
+        env_config = yaml_config['env_config_train']
+        env_config['with_opponent'] = False
+        
+        # Create environment through Ray registration
+        from ray.rllib.env.env_context import EnvContext
+        env_context = EnvContext(env_config, worker_index=0, num_workers=1)
+        
+        # Test creating environment in a remote function
+        @ray.remote
+        def create_and_test_env(config):
+            env = SerializableHierarchicalGridGym(config)
+            obs, _ = env.reset()
+            env.close()
+            return True
+        
+        # Execute remote function
+        result = ray.get(create_and_test_env.remote(env_context))
+        if result:
+            print("✓ Remote environment creation successful")
+        
+        # Test with multiple workers
+        results = ray.get([create_and_test_env.remote(env_context) for _ in range(2)])
+        if all(results):
+            print("✓ Multiple remote workers successful")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ray test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        ray.shutdown()
+
+def test_with_ppo():
+    """Test environment with PPO algorithm."""
+    print("\n4. Testing with PPO algorithm...")
     
-    return True
+    try:
+        from ray.rllib.algorithms.ppo import PPOConfig
+        from ray.rllib.core.rl_module.rl_module import RLModuleSpec
+        from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
+        from models.mlp import ChooseSubstationModel, ChooseActionModel
+        
+        # Initialize Ray
+        if not ray.is_initialized():
+            ray.init(ignore_reinit_error=True)
+        
+        # Register environment
+        register_env("SerializableHierarchicalGridGym", 
+                    lambda config: SerializableHierarchicalGridGym(config))
+        
+        # Load config
+        with open("experiments/hierarchical/full_mlp_share_critic.yaml") as f:
+            yaml_config = yaml.safe_load(f)
+        
+        # Create PPO config
+        config = PPOConfig()
+        
+        env_config_train = yaml_config['env_config_train']
+        env_config_train['with_opponent'] = False
+        
+        config.environment(
+            env="SerializableHierarchicalGridGym", 
+            env_config=env_config_train,
+            disable_env_checking=True
+        )
+        
+        config.multi_agent(
+            policies=["choose_substation_agent", "choose_action_agent"],
+            policy_mapping_fn=(lambda agent_id, episode, **kwargs: 
+                               "choose_action_agent" if agent_id.startswith("choose_action_agent") 
+                               else "choose_substation_agent")
+        )
+        
+        config.rl_module(
+            rl_module_spec=MultiRLModuleSpec(
+                rl_module_specs={
+                    "choose_substation_agent": RLModuleSpec(
+                        module_class=ChooseSubstationModel
+                    ),
+                    "choose_action_agent": RLModuleSpec(
+                        module_class=ChooseActionModel
+                    ),
+                }
+            ),
+        )
+        
+        config.api_stack(enable_rl_module_and_learner=True,
+                         enable_env_runner_and_connector_v2=True)
+        config.framework("torch")
+        config.env_runners(num_env_runners=0)  # Local only for testing
+        
+        # Try to build the algorithm
+        algo = config.build_algo()
+        print("✓ PPO algorithm built successfully")
+        
+        # Try one training iteration
+        result = algo.train()
+        print("✓ One training iteration completed")
+        print(f"  Episode reward mean: {result.get('env_runners', {}).get('episode_reward_mean', 'N/A')}")
+        
+        algo.stop()
+        ray.shutdown()
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ PPO test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        ray.shutdown()
+        return False
 
 if __name__ == "__main__":
-    print("Testing HierarchicalGridGym environment...\n")
+    print("Testing SerializableHierarchicalGridGym...\n")
     
-    # Run basic tests
-    if test_environment():
-        print("\nRunning Ray integration test...")
-        if test_with_ray():
-            print("\n🎉 All tests passed! The environment is ready for training.")
-        else:
-            print("\n⚠️ Ray integration test failed.")
+    tests = [
+        ("Basic Functionality", test_basic_functionality),
+        ("Serialization", test_serialization),
+        ("Ray Integration", test_with_ray),
+        ("PPO Algorithm", test_with_ppo),
+    ]
+    
+    results = []
+    for test_name, test_func in tests:
+        print(f"\n{'='*50}")
+        print(f"Running: {test_name}")
+        print('='*50)
+        results.append((test_name, test_func()))
+    
+    print(f"\n{'='*50}")
+    print("Test Summary:")
+    print('='*50)
+    for test_name, passed in results:
+        status = "✅ PASSED" if passed else "❌ FAILED"
+        print(f"{test_name}: {status}")
+    
+    all_passed = all(passed for _, passed in results)
+    if all_passed:
+        print("\n🎉 All tests passed! The environment is ready for training.")
     else:
-        print("\n⚠️ Basic environment test failed.")
+        print("\n⚠️ Some tests failed. Please fix the issues before training.")

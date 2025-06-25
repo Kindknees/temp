@@ -64,9 +64,15 @@ class MaxNotImprovedStopper(Stopper):
         metric_result = result.get(self._metric)
         self._iter[trial_id] += 1
 
+        # --- FIX: Add a check to see if the metric exists in the current result ---
+        # If not (e.g., this is a training result, not an evaluation result),
+        # do not perform a check and return False to continue the trial.
+        if metric_result is None:
+            return False
+
         logging.info(f"Metric result: {metric_result}")
         logging.info(f"Trials without improvement: {self._iter_no_improv[trial_id]}")
-        logging.info(f"Trials without improvement: {self._iter_no_improv[trial_id]}")
+        # This logging line was duplicated, I've removed one.
         if metric_result > self._current_max_trial[trial_id] * (1 + self._percent_improve):
             self._current_max_trial[trial_id] = metric_result
             self._iter_no_improv[trial_id] = 0

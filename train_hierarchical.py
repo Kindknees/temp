@@ -22,7 +22,8 @@ from dotenv import load_dotenv
 
 # Import custom RLModule models
 from models.mlp import ChooseSubstationModel, ChooseActionModel
-from grid2op_env.grid_to_gym import HierarchicalGridGym
+# Use the serializable wrapper instead
+from grid2op_env.grid2op_wrapper import SerializableHierarchicalGridGym
 from experiments.stopper import MaxNotImprovedStopper
 from experiments.callback import LogDistributionsCallback
 
@@ -43,8 +44,8 @@ def main():
     np.random.seed(2137)
     torch.manual_seed(2137)
     
-    # Register environment
-    register_env("HierarchicalGridGym", lambda config: HierarchicalGridGym(config))
+    # Register environment with the serializable wrapper
+    # register_env("HierarchicalGridGym", lambda config: SerializableHierarchicalGridGym(config))
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Train a hierarchical agent on the Grid2Op environment")
@@ -105,19 +106,21 @@ def main():
         ),
     )
 
-    config.api_stack(enable_rl_module_and_learner=True)
-
     # Configure framework and resources
     config.framework("torch")
     config.env_runners(
         num_env_runners=tune_params['num_workers'],
-        rollout_fragment_length=tune_params['rollout_fragment_length']
+        rollout_fragment_length=tune_params['rollout_fragment_length'],
+         # from community
+        add_default_connectors_to_env_to_module_pipeline=True,
+        add_default_connectors_to_module_to_env_pipeline=True
     )
     
     config.fault_tolerance(restart_failed_env_runners=True)
 
     config.api_stack(enable_rl_module_and_learner=True,
                      enable_env_runner_and_connector_v2=True)
+    config.experimental(_validate_config=False)
 
     # Configure training hyperparameters
     # Note: In newer RLlib versions, PPO-specific parameters are set directly
@@ -132,7 +135,9 @@ def main():
         clip_param=0.2,  # Standard PPO clip parameter
         vf_loss_coeff=tune_params['vf_loss_coeff'],
         vf_clip_param=float(tune_params['vf_clip_param']),
+        # from community
         use_gae=True,
+        use_critic=True
     )
     
     # Configure evaluation
@@ -155,14 +160,14 @@ def main():
         stopper = CombinedStopper(
             MaximumIterationStopper(max_iter=args.num_iters),
             MaxNotImprovedStopper(
-                metric="evaluation/episode_reward_mean",
+                metric="evaluation/env_runners/episode_return_mean",
                 grace_period=args.grace_period,
                 num_iters_no_improvement=args.num_iters_no_improvement
             )
         )
 
         tune_config = tune.TuneConfig(
-            metric="evaluation/episode_reward_mean",
+            metric="evaluation/env_runners/episode_return_mean",
             mode="max",
             num_samples=args.num_samples,
         )
@@ -173,7 +178,7 @@ def main():
             stop=stopper,
             checkpoint_config=CheckpointConfig(
                 num_to_keep=5,
-                checkpoint_score_attribute="evaluation/episode_reward_mean",
+                checkpoint_score_attribute="evaluation/env_runners/episode_return_mean",
                 checkpoint_score_order="max",
                 checkpoint_frequency=args.checkpoint_freq,
             ),
@@ -188,7 +193,14 @@ def main():
         )
         
         results = tuner.fit()
-        logging.info(f"Best checkpoint found was: {results.get_best_result().checkpoint}")
+        
+        # Handle the case where no results completed
+        try:
+            best_result = results.get_best_result()
+            logging.info(f"Best checkpoint found was: {best_result.checkpoint}")
+        except RuntimeError as e:
+            logging.error(f"No results completed: {e}")
+            logging.info("Check the logs above for error details.")
 
     else: # Single training run without Tune
         algo = config.build()
@@ -204,6 +216,7 @@ if __name__ == "__main__":
     if not ray.is_initialized():
         ray.init(ignore_reinit_error=True, logging_level=logging.WARNING)
     
-    register_env("HierarchicalGridGym", lambda config: HierarchicalGridGym(config))
+    # Register the serializable environment
+    register_env("HierarchicalGridGym", lambda config: SerializableHierarchicalGridGym(config))
     main()
     ray.shutdown()
