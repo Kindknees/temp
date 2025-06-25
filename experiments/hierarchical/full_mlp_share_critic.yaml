@@ -35,6 +35,7 @@ tune_config:
   rollout_fragment_length: 128
   train_batch_size: 1024
   sgd_minibatch_size: 256
+  seed: 0
   
   # 資源設定
   num_workers: 2

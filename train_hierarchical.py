@@ -36,7 +36,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-LOCAL_DIR = "/Users/chunyu/Desktop/HRL_python311/log_files"
+current_directory = os.path.dirname(os.path.abspath(__file__))
+new_folder_name = "log_files"
+log_files_absolute_path = os.path.join(current_directory, new_folder_name)
+LOCAL_DIR = log_files_absolute_path
 
 def main():
     # Set random seeds for reproducibility
@@ -178,7 +181,7 @@ def main():
     # Handle hyperparameter search
     param_space = config.to_dict()
     param_space['lr'] = tune.loguniform(1e-6, 1e-4)
-    param_space['seed'] = tune.randint(0, 1000)
+    param_space['seed'] = yaml_config["tune_config"]["seed"]
 
     if args.use_tune:
         stopper = CombinedStopper(
