@@ -54,9 +54,9 @@ def main():
     # 根據是否有 GPU 來設定資源
     # Learner 是訓練的核心，如果用 GPU，就給它一整張卡
     num_gpus_for_learner = 1 if use_gpu else 0
-    # EnvRunner/Worker 主要是做推論(inference)，通常不需要整張卡，可以分配少量資源
     # 如果 worker 數量多，可以設定 0.1, 0.2 等小數，讓大家共享 GPU
-    num_gpus_per_worker = 0.1 if use_gpu else 0
+    # num_gpus_per_worker = 0.1 if use_gpu else 0
+    num_gpus_per_worker = 0
 
     # Register environment with the serializable wrapper
     # register_env("HierarchicalGridGym", lambda config: SerializableHierarchicalGridGym(config))
@@ -139,6 +139,10 @@ def main():
     config.experimental(_validate_config=False)
 
     config.resources(
+        num_gpus=num_gpus_per_worker
+    )
+
+    config.learners(
         num_gpus_per_learner=num_gpus_for_learner
     )
 
