@@ -1,6 +1,7 @@
 import numpy as np
-import matplotlib.pyplot as plt 
 import matplotlib
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt
 import io
 import logging
 import torch
@@ -40,7 +41,7 @@ CB91_Amber = '#F5B14C'
 color_list = [CB91_Blue, CB91_Pink, CB91_Green, CB91_Amber,
               CB91_Purple, CB91_Violet]
 plt.rcParams['axes.prop_cycle'] = plt.cycler(color=color_list)
-plt.figure(figsize=(14,10), tight_layout=True)
+# plt.figure(figsize=(14,10), tight_layout=True)
 
 class LogDistributionsCallback(RLlibCallback):
     """
@@ -286,18 +287,18 @@ def bar_graph_from_dict(dic):
     """
     Given a dictionary, return matplotlib bar graph figure.
     """
-    fig = plt.figure(figsize=(14, 10))
+    # 將建立 figure 的動作完全放在函式內部
+    fig = plt.figure(figsize=(14, 10), tight_layout=True) # 
     ax = fig.add_subplot(111)
     
-    # Sort dictionary by keys for consistent ordering
-    sorted_items = sorted(dic.items(), key=lambda x: int(x[0]))
-    keys, values = zip(*sorted_items) if sorted_items else ([], [])
+    sorted_items = sorted(dic.items(), key=lambda x: int(x[0])) # [cite: 72]
+    keys, values = zip(*sorted_items) if sorted_items else ([], []) # [cite: 72]
     
-    ax.bar(keys, values)
-    ax.set_xticklabels(keys, rotation=90, fontsize=4)
-    ax.set_xlabel('Action')
-    ax.set_ylabel('Proportion of all non-zero actions')
-    fig.canvas.draw()
+    ax.bar(keys, values) # [cite: 72]
+    ax.set_xticklabels(keys, rotation=90, fontsize=4) # [cite: 72]
+    ax.set_xlabel('Action') # [cite: 72]
+    ax.set_ylabel('Proportion of all non-zero actions') # [cite: 72]
+    fig.canvas.draw() # [cite: 72]
 
     return fig
 

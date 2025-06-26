@@ -11,6 +11,7 @@ from grid2op.Reward import L2RPNReward
 from grid2op.Converter import IdToAct
 from lightsim2grid import LightSimBackend
 from grid2op.gym_compat import BoxGymnasiumObsSpace
+from grid2op_env.rewards import ScaledL2RPNReward
 
 import logging
 logger = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
 
         backend = LightSimBackend()
         self.grid2op_env = grid2op.make(
-            env_name, reward_class=L2RPNReward(), test=False, backend=backend, 
+            env_name, reward_class=ScaledL2RPNReward, test=False, backend=backend, 
             **(opponent_kwargs if with_opponent else {})
         )
 
@@ -216,8 +217,28 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
             reconnect_act = self.grid2op_env.action_space({"set_line_status": (self.reconnect_line, 1)})
             g2op_act = g2op_act + reconnect_act
             self.reconnect_line = None
-        
+            
+        # Perform the initial step with the agent's action
         g2op_obs, reward, done, info = self.grid2op_env.step(g2op_act)
+        self.steps_in_episode += 1
+
+        # ADDED: Logic for run_until_threshold from old project
+        run_until_threshold = self.env_config.get("run_until_threshold", False)
+        rho_threshold = self.env_config.get("rho_threshold", 0.95) - 1e-5
+        
+        cum_reward = reward
+        if run_until_threshold and not done:
+            current_rho = np.asarray(g2op_obs.rho)
+            # Create do-nothing action in grid2op format
+            do_nothing_g2op_act = self.action_converter.from_gym(self.do_nothing_action_idx)
+            
+            while (np.max(current_rho) < rho_threshold) and not done:
+                g2op_obs, reward_do_nothing, done, info = self.grid2op_env.step(do_nothing_g2op_act)
+                cum_reward += reward_do_nothing # Accumulate reward 
+                self.steps_in_episode += 1
+                current_rho = np.asarray(g2op_obs.rho)
+        
+        final_reward = cum_reward # Use the accumulated reward
         
         if isinstance(info.get("opponent_attack_line"), np.ndarray):
             if info.get("opponent_attack_duration") == 1:
@@ -227,7 +248,6 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         
         gym_obs = self.gym_obs_space.to_gym(g2op_obs)
         self.current_obs = _convert_obs_to_float32(gym_obs)
-        self.steps_in_episode += 1
         
         terminated = done
         truncated = info.get('is_truncated', False)
@@ -235,8 +255,8 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         truncateds = {"__all__": truncated}
 
         rewards = {
-            self.high_level_agent_id: reward,
-            self.low_level_agent_id: reward
+            self.high_level_agent_id: final_reward, # CHANGED: use final_reward
+            self.low_level_agent_id: final_reward   # CHANGED: use final_reward
         }
 
         next_obs = {}
@@ -250,7 +270,6 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
                 }
             }
         else:
-            # On episode end, no agent is active for the next step.
             self.agents = []
         
         infos = {
