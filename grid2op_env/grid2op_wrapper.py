@@ -1,9 +1,3 @@
-"""
-Wrapper to handle Grid2Op serialization issues with Ray.
-Grid2Op dynamically creates classes that can't be pickled across processes.
-This wrapper ensures environments are created fresh in each worker.
-"""
-
 import numpy as np
 import grid2op
 from typing import Any, Dict as TypingDict, Tuple, Set
@@ -64,7 +58,7 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         
         self.env_config = env_config if env_config is not None else {}
         self._initialized = False
-        
+      
         # **FIX**: Use the correct, static number of actions for the placeholder.
         placeholder_num_substations = 14
         placeholder_num_actions = 106     # The real size for this environment.
@@ -85,7 +79,7 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
                 "chosen_substation": Discrete(placeholder_num_substations)
             })
         })
-        
+ 
         self.action_space = gym.spaces.Dict({
             self.high_level_agent_id: Discrete(placeholder_num_substations),
             self.low_level_agent_id: Discrete(placeholder_num_actions)
@@ -207,8 +201,6 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
             }
         }
         
-        # CORRECTED REWARDS: The high-level agent just acted. Its immediate reward is 0.
-        # The reward dictionary should be keyed by the agent that acted.
         rewards = {self.high_level_agent_id: 0.0}
         
         terminateds = {"__all__": False}
@@ -242,15 +234,14 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         terminateds = {"__all__": terminated}
         truncateds = {"__all__": truncated}
 
-        rewards = {}
-        next_obs = {}
+        rewards = {
+            self.high_level_agent_id: reward,
+            self.low_level_agent_id: reward
+        }
 
+        next_obs = {}
         if not (terminated or truncated):
             self.agents = [self.high_level_agent_id]
-            
-            # CORRECTED REWARDS: The low-level agent just acted and received 'reward'.
-            # The GAE postprocessor will correctly assign credit to the high-level agent later.
-            rewards = {self.low_level_agent_id: reward}
             
             next_obs = {
                 self.high_level_agent_id: {
@@ -259,15 +250,9 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
                 }
             }
         else:
-            # On episode end, it's common to give the final reward to all agents.
+            # On episode end, no agent is active for the next step.
             self.agents = []
-            rewards = {
-                self.high_level_agent_id: reward,
-                self.low_level_agent_id: reward
-            }
-            next_obs = {}
         
-        # Pass info for the agents. The low-level info dict can contain useful debug info from the env.
         infos = {
             self.high_level_agent_id: {"steps_in_episode": self.steps_in_episode}, 
             self.low_level_agent_id: info
