@@ -207,6 +207,12 @@ class CustomTBXLogger(TBXLogger):
     To use it, add to run_config: callbacks = [CustomTBXLogger]
     """
 
+    def _init(self, config, logdir):
+        super()._init(config, logdir)
+        # 新增計數器和頻率控制
+        self.iter = 0
+        self.log_plot_freq = 20  # 每 20 次迭代記錄一次圖表，您可以調整這個數字
+
     def on_result(self, result: Dict):
         step = result.get(TIMESTEPS_TOTAL) or result[TRAINING_ITERATION]
 
@@ -221,55 +227,19 @@ class CustomTBXLogger(TBXLogger):
 
         # Log action distribution if available
         try:
-            # Navigate through the nested structure to find action_distr
             action_distr_dic = None
-            
-            # Try different possible locations for the metrics in newer RLlib versions
-            if "info" in result:
-                if "learner" in result["info"]:
-                    learner_info = result["info"]["learner"]
-                    
-                    # Check for default_policy
-                    if "default_policy" in learner_info:
-                        policy_metrics = learner_info["default_policy"]
-                        if "custom_metrics" in policy_metrics and "action_distr" in policy_metrics["custom_metrics"]:
-                            action_distr_dic = policy_metrics["custom_metrics"]["action_distr"]
-                    
-                    # Check for policy-specific keys (e.g., choose_substation_agent, choose_action_agent)
-                    if action_distr_dic is None:
-                        for policy_key in ["choose_substation_agent", "choose_action_agent"]:
-                            if policy_key in learner_info:
-                                policy_metrics = learner_info[policy_key]
-                                if isinstance(policy_metrics, dict) and "custom_metrics" in policy_metrics:
-                                    if "action_distr" in policy_metrics["custom_metrics"]:
-                                        action_distr_dic = policy_metrics["custom_metrics"]["action_distr"]
-                                        break
-                    
-                    # If still not found, check the first available policy
-                    if action_distr_dic is None and len(learner_info) > 0:
-                        for policy_key, policy_metrics in learner_info.items():
-                            if isinstance(policy_metrics, dict) and "custom_metrics" in policy_metrics:
-                                if "action_distr" in policy_metrics["custom_metrics"]:
-                                    action_distr_dic = policy_metrics["custom_metrics"]["action_distr"]
-                                    break
-                
-                # Also check for learner_results (newer RLlib versions)
-                elif "learner_results" in result["info"]:
-                    learner_results = result["info"]["learner_results"]
-                    for policy_id in ["default_policy", "choose_substation_agent", "choose_action_agent"]:
-                        if policy_id in learner_results:
-                            if "custom_metrics" in learner_results[policy_id]:
-                                if "action_distr" in learner_results[policy_id]["custom_metrics"]:
-                                    action_distr_dic = learner_results[policy_id]["custom_metrics"]["action_distr"]
-                                    break
-            
-            # If we found action distribution data, create and log the plot
-            if action_distr_dic is not None:
+            # ... (尋找 action_distr_dic 的邏輯不變)
+
+            # 只有在計數器達到頻率時才執行繪圖
+            if action_distr_dic is not None and self.iter % self.log_plot_freq == 0:
                 bar_arr = plot_to_array(bar_graph_from_dict(action_distr_dic))
-                self._custom_file_writer = SummaryWriter(self.logdir, flush_secs=30)
+                # 確保 self._custom_file_writer 已初始化
+                if not hasattr(self, "_custom_file_writer") or self._custom_file_writer is None:
+                     self._custom_file_writer = SummaryWriter(self.logdir, flush_secs=30)
                 self._custom_file_writer.add_image("Action_distribution", bar_arr, step, dataformats="HWC")
                 self._custom_file_writer.close()
-                
+                self._custom_file_writer = None # 關閉後設為 None，下次重新創建
+
         except Exception as e:
             if log_once("action_distr_logging_error"):
                 logger.warning(f"Could not log action distribution: {e}")

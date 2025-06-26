@@ -220,7 +220,8 @@ def main():
                 checkpoint_score_order="max",
                 checkpoint_frequency=args.checkpoint_freq,
             ),
-            callbacks=[WandbLoggerCallback(api_key=WANDB_API_KEY, project=args.project_name, log_config=True)] if WANDB_API_KEY else []
+            callbacks=[WandbLoggerCallback(api_key=WANDB_API_KEY, project=args.project_name, log_config=True)] if WANDB_API_KEY else [],
+            verbose=1
         )
 
         tuner = tune.Tuner(
