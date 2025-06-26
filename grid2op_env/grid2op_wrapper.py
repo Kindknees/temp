@@ -1,3 +1,5 @@
+# 檔案: kindknees-temp/grid2op_env/grid2op_wrapper.py
+
 import numpy as np
 import grid2op
 from typing import Any, Dict as TypingDict, Tuple, Set
@@ -7,11 +9,10 @@ from gymnasium.spaces import Box, Discrete, Dict
 from ray.rllib.env import MultiAgentEnv
 from grid2op_env.medha_action_space import create_action_space, remove_redundant_actions
 from grid2op_env.utils import CustomDiscreteActions, get_sub_id_to_action, opponent_kwargs
-from grid2op.Reward import L2RPNReward
+from grid2op_env.rewards import ScaledL2RPNReward
 from grid2op.Converter import IdToAct
 from lightsim2grid import LightSimBackend
 from grid2op.gym_compat import BoxGymnasiumObsSpace
-from grid2op_env.rewards import ScaledL2RPNReward
 
 import logging
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 def _recursively_define_float32_space(space: gym.Space) -> gym.Space:
     if isinstance(space, Box):
         return Box(
-            low=np.asarray(space.low, dtype=np.float32),
+           low=np.asarray(space.low, dtype=np.float32),
             high=np.asarray(space.high, dtype=np.float32),
             shape=space.shape,
             dtype=np.float32
@@ -30,18 +31,39 @@ def _recursively_define_float32_space(space: gym.Space) -> gym.Space:
             k: _recursively_define_float32_space(v) for k, v in space.spaces.items()
         })
     elif isinstance(space, gym.spaces.Tuple):
-        return gym.spaces.Tuple(
+         return gym.spaces.Tuple(
             tuple(_recursively_define_float32_space(s) for s in space.spaces)
         )
     return space
 
-
+# ####################################################################
+# REPLACED: 將原本不夠穩健的轉換函式，替換為能處理陣列、純量和列表的更強版本
+# ####################################################################
 def _convert_obs_to_float32(obs: Any) -> Any:
+    """
+    遞迴地走訪觀測值(字典、列表/元組或陣列)，並將所有浮點數Numpy物件轉換為float32。
+    這個版本比先前更穩健。
+    """
     if isinstance(obs, dict):
+        # 處理字典結構的觀測值
         return {k: _convert_obs_to_float32(v) for k, v in obs.items()}
-    elif isinstance(obs, np.ndarray) and obs.dtype != np.float32:
-        return obs.astype(np.float32)
-    return obs
+    elif isinstance(obs, (np.ndarray, np.generic)):
+        # 如果是Numpy陣列或純量 (np.float64, np.int64 等)
+        if np.issubdtype(obs.dtype, np.floating):
+            # 並且其資料型態為浮點數，則轉換為float32
+            return obs.astype(np.float32)
+        else:
+            # 如果是整數等其他型態，則保持不變
+            return obs
+    elif isinstance(obs, (list, tuple)):
+        # 如果是列表或元組，遞迴處理其內部每一個元素
+        return type(obs)(_convert_obs_to_float32(v) for v in obs)
+    else:
+        # 其他型態（如原生 Python int, float）保持不變
+        return obs
+# ####################################################################
+# END REPLACEMENT
+# ####################################################################
 
 
 class SerializableHierarchicalGridGym(MultiAgentEnv):
@@ -60,9 +82,8 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         self.env_config = env_config if env_config is not None else {}
         self._initialized = False
       
-        # **FIX**: Use the correct, static number of actions for the placeholder.
         placeholder_num_substations = 14
-        placeholder_num_actions = 106     # The real size for this environment.
+        placeholder_num_actions = 106
         placeholder_obs_shape = (152,)
 
         regular_obs_space = Box(
@@ -92,12 +113,13 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
 
         env_name = self.env_config.get("env_name", "rte_case14_realistic")
         with_opponent = self.env_config.get("with_opponent", False)
+        
         keep_observations = self.env_config.get("keep_observations", None)
         disable_line = self.env_config.get("disable_line", -1)
 
         backend = LightSimBackend()
         self.grid2op_env = grid2op.make(
-            env_name, reward_class=ScaledL2RPNReward, test=False, backend=backend, 
+            env_name, reward_class=ScaledL2RPNReward, test=False, backend=backend,
             **(opponent_kwargs if with_opponent else {})
         )
 
@@ -112,7 +134,6 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         converter.init_converter(all_actions=all_actions)
         self.action_converter = CustomDiscreteActions(converter=converter)
         
-        # Verify placeholder dimensions match the real dimensions
         real_num_actions = len(self.action_converter.converter.all_actions)
         if real_num_actions != self.action_space.spaces[self.low_level_agent_id].n:
             raise ValueError(
@@ -140,7 +161,8 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         self._initialized = True
         logger.info(f"Grid2Op environment initialized with {len(self.num_to_sub)} substations and {real_num_actions} actions")
 
-    def reset(self, *, seed: int | None = None, options: TypingDict[str, Any] | None = None) -> tuple[TypingDict, TypingDict]:
+    def reset(self, *, seed: int | None = None, options: TypingDict[str, Any] |
+ None = None) -> tuple[TypingDict, TypingDict]:
         if not self._initialized:
             self._lazy_init()
         
@@ -209,7 +231,6 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         infos = {self.high_level_agent_id: {}}
         return obs, rewards, terminateds, truncateds, infos
 
-
     def _low_level_step(self, low_level_action: int) -> tuple[TypingDict, TypingDict, TypingDict, TypingDict, TypingDict]:
         g2op_act = self.action_converter.from_gym(low_level_action)
         
@@ -218,27 +239,24 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
             g2op_act = g2op_act + reconnect_act
             self.reconnect_line = None
             
-        # Perform the initial step with the agent's action
         g2op_obs, reward, done, info = self.grid2op_env.step(g2op_act)
         self.steps_in_episode += 1
 
-        # ADDED: Logic for run_until_threshold from old project
         run_until_threshold = self.env_config.get("run_until_threshold", False)
         rho_threshold = self.env_config.get("rho_threshold", 0.95) - 1e-5
         
         cum_reward = reward
         if run_until_threshold and not done:
             current_rho = np.asarray(g2op_obs.rho)
-            # Create do-nothing action in grid2op format
             do_nothing_g2op_act = self.action_converter.from_gym(self.do_nothing_action_idx)
             
             while (np.max(current_rho) < rho_threshold) and not done:
                 g2op_obs, reward_do_nothing, done, info = self.grid2op_env.step(do_nothing_g2op_act)
-                cum_reward += reward_do_nothing # Accumulate reward 
+                cum_reward += reward_do_nothing
                 self.steps_in_episode += 1
                 current_rho = np.asarray(g2op_obs.rho)
         
-        final_reward = cum_reward # Use the accumulated reward
+        final_reward = cum_reward
         
         if isinstance(info.get("opponent_attack_line"), np.ndarray):
             if info.get("opponent_attack_duration") == 1:
@@ -255,8 +273,8 @@ class SerializableHierarchicalGridGym(MultiAgentEnv):
         truncateds = {"__all__": truncated}
 
         rewards = {
-            self.high_level_agent_id: final_reward, # CHANGED: use final_reward
-            self.low_level_agent_id: final_reward   # CHANGED: use final_reward
+            self.high_level_agent_id: final_reward,
+            self.low_level_agent_id: final_reward
         }
 
         next_obs = {}
