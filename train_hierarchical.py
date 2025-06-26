@@ -164,13 +164,13 @@ def main():
     # Note: In newer RLlib versions, PPO-specific parameters are set directly
     config.training(
         train_batch_size=tune_params['train_batch_size'],
-        lr=tune_params.get('lr', 5e-5),
+        lr=tune_params['lr'],
         num_epochs=tune_params['num_epochs'],
         minibatch_size=tune_params['sgd_minibatch_size'],
         lambda_=tune_params['lambda_'],
         kl_coeff=tune_params['kl_coeff'],
         entropy_coeff=tune_params['entropy_coeff'],
-        clip_param=0.2,  # Standard PPO clip parameter
+        clip_param=tune_params['clip_param'],  # Standard PPO clip parameter
         vf_loss_coeff=tune_params['vf_loss_coeff'],
         vf_clip_param=float(tune_params['vf_clip_param']),
         # from community
@@ -191,8 +191,8 @@ def main():
     
     # Handle hyperparameter search
     param_space = config.to_dict()
-    param_space['lr'] = tune.loguniform(1e-6, 1e-4)
-    param_space['seed'] = yaml_config["tune_config"]["seed"]
+    param_space['lr'] = tune_params.get('lr') 
+    param_space['seed'] = tune.choice([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])
 
     if args.use_tune:
         stopper = CombinedStopper(

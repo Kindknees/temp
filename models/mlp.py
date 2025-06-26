@@ -284,9 +284,14 @@ class ChooseActionModel(BaseHierarchicalRLM):
         actor_features = self.separate_actor_base(actor_input)
         action_logits = self.logits_head(actor_features)
         
-        # Apply action mask
-        inf_mask = torch.clamp(torch.log(action_mask), min=FLOAT_MIN)
-        masked_action_logits = action_logits + inf_mask
+        # CHANGED: 使用更數值穩定的遮罩方式
+        # 將 action_mask 中為 0 的位置，在 action_logits 中對應加上一個非常大的負數
+        # 而不使用 log(0)
+        masked_action_logits = torch.where(
+            action_mask.bool(),
+            action_logits,
+            torch.tensor(FLOAT_MIN, device=action_logits.device)
+        )
         
         # Critic forward pass (uses only regular_obs)
         regular_obs = self._get_regular_obs(batch)
