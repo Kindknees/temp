@@ -6,6 +6,7 @@ import argparse
 import numpy as np
 import torch
 import gymnasium as gym
+import wandb
 
 import ray
 from ray import tune
@@ -29,7 +30,7 @@ from experiments.callback import LogDistributionsCallback
 
 # Initialize logging and environment variables
 load_dotenv()
-WANDB_API_KEY = os.environ.get("WANDB_API_KEY")
+    
 logging.basicConfig(
     format='[INFO]: %(asctime)s,%(msecs)d %(levelname)-8s [%(pathname)s:%(lineno)d in function %(funcName)s] %(message)s',
     datefmt='%Y-%m-%d:%H:%M:%S',
@@ -79,8 +80,18 @@ def main():
     parser.add_argument("--num_iters_no_improvement", type=int, default=200, help="Number of iterations with no improvement before stopping.")
     parser.add_argument("--with_opponent", action=argparse.BooleanOptionalAction, default=False, help="Whether to use an opponent or not.")
     parser.add_argument("--num_workers", type=int, default=1, help="Number of rollout workers to use. Set to 0 for Colab/low-resource environments.")
-
+    parser.add_argument("--wandb_api_key", type=str, default=None, help="WandB API key for logging. If not provided, will use the environment variable")
     args = parser.parse_args()
+
+    if args.wandb_api_key is None:
+        WANDB_API_KEY = os.getenv("WANDB_API_KEY")
+    else:
+        WANDB_API_KEY = args.wandb_api_key
+
+    try:
+        wandb.login(key=WANDB_API_KEY)
+    except Exception as e:
+        print (f"Failed to login to WandB: {e}")
 
     logging.info("Training the agent with the following parameters:")
     for arg, value in vars(args).items():
@@ -209,7 +220,7 @@ def main():
                 checkpoint_score_order="max",
                 checkpoint_frequency=args.checkpoint_freq,
             ),
-            callbacks=[WandbLoggerCallback(api_key=WANDB_API_KEY, project=args.project_name)] if WANDB_API_KEY else []
+            callbacks=[WandbLoggerCallback(api_key=WANDB_API_KEY, project=args.project_name, log_config=True)] if WANDB_API_KEY else []
         )
 
         tuner = tune.Tuner(

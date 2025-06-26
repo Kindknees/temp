@@ -207,3 +207,58 @@ class DistanceReward(BaseReward):
                       [dt_float(0.0), len(topo) * dt_float(1.0)],
                       [self.reward_max, self.reward_min])
         return r
+    
+class CombinedReward(BaseReward):
+    """
+    這是一個複合式獎勵，將多個獎勵機制以指定的權重結合起來。
+    這個範例結合了:
+    - CloseToOverflowReward
+    - LinesReconnectedReward
+    - DistanceReward
+    三者權重皆為 0.33。
+    """
+    def __init__(self):
+        # 記得呼叫父類別的建構函式
+        super().__init__()
+        
+        # 1. 在內部實例化 (instantiate) 您想要結合的所有獎勵類別
+        self.reward_overflow = CloseToOverflowReward()
+        self.reward_reconnect = LinesReconnectedReward()
+        self.reward_distance = DistanceReward()
+        
+        # 將它們和對應的權重放在一個列表中，方便管理
+        self.rewards_and_weights = [
+            (self.reward_overflow, 0.33),
+            (self.reward_reconnect, 0.33),
+            (self.reward_distance, 0.33)
+        ]
+        
+        # 2. 計算這個複合獎勵的理論最大值與最小值
+        # 這對於某些強化學習演算法的內部數值穩定性很重要
+        self.reward_min = sum(r.reward_min * w for r, w in self.rewards_and_weights)
+        self.reward_max = sum(r.reward_max * w for r, w in self.rewards_and_weights)
+
+    def initialize(self, env):
+        """
+        當環境被建立時，這個函數會被呼叫。
+        我們必須確保所有子獎勵也都被正確地初始化。
+        """
+        # 3. 呼叫所有子獎勵的 initialize 方法
+        for r, w in self.rewards_and_weights:
+            r.initialize(env)
+            
+    def __call__(self, action, env, has_error, is_done, is_illegal, is_ambiguous):
+        """
+        這是計算獎勵的核心函數，會在每個時間點被環境呼叫。
+        """
+        # 4. 呼叫所有子獎勵的 __call__ 方法來取得它們各自的分數
+        #    並將它們與對應的權重相乘
+        weighted_rewards = [
+            r(action, env, has_error, is_done, is_illegal, is_ambiguous) * w
+            for r, w in self.rewards_and_weights
+        ]
+        
+        # 5. 將加權後的分數相加，得到最終的總獎勵
+        final_reward = sum(weighted_rewards)
+        
+        return final_reward

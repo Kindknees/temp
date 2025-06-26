@@ -18,7 +18,11 @@ from grid2op.gym_compat import BoxGymnasiumObsSpace, DiscreteActSpace, GymEnv
 
 # 專案模組導入
 from grid2op_env.medha_action_space import create_action_space, remove_redundant_actions
+from rewards import CombinedReward, ScaledL2RPNReward
 from grid2op_env.utils import CustomDiscreteActions, get_sub_id_to_action, opponent_kwargs
+from grid2op_env.rewards import ScaledL2RPNReward, CloseToOverflowReward, LinesReconnectedReward, DistanceReward
+
+from lightsim2grid import LightSimBackend
 
 # 設定日誌
 logger = logging.getLogger(__name__)
@@ -439,9 +443,9 @@ def create_gym_env(**env_config: Any) -> tuple:
     # 根據是否需要對手來建立 Grid2Op 環境
     backend = LightSimBackend()
     if with_opponent:
-        env = grid2op.make(env_name, reward_class=L2RPNReward(), test=False, backend=backend, **opponent_kwargs)
+        env = grid2op.make(env_name, reward_class=ScaledL2RPNReward, test=False, backend=LightSimBackend, **opponent_kwargs)
     else:
-        env = grid2op.make(env_name, reward_class=L2RPNReward(), test=False, backend=backend)
+        env = grid2op.make(env_name, reward_class=ScaledL2RPNReward, test=False, backend=LightSimBackend)
     
     logging.info(f"Grid2Op environment created with {len(env.chronics_handler.subpaths)} chronics.")
 
